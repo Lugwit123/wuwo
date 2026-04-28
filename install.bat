@@ -12,11 +12,12 @@ REM           -> use current directory as wuwo dir directly
 REM
 REM  Steps:
 REM    1. Locate / clone wuwo repo
-REM    2. Download Python 3.12.8 standard installer (if needed)
-REM    3. Silently install Python to wuwo\py_312\
+REM    2. Download Python 3.12.10 full zip (green, no install needed)
+REM    3. Extract to wuwo\py_312\  (includes tkinter + pip)
 REM    4. Hand over to wuwo\install.py for all further steps
 REM
 REM  No system Python required - fully self-contained!
+REM  No system registration - fully portable/green!
 REM ============================================================
 
 set "INSTALLER_DIR=%~dp0"
@@ -34,11 +35,12 @@ if exist "%INSTALLER_DIR%install.py" (
 set "PYTHON_DIR=%WUWO_DIR%\py_312"
 set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 
-set "FULL_VER=3.12.8"
-set "INSTALLER_NAME=python-%FULL_VER%-amd64.exe"
-set "INSTALLER_URL=https://www.python.org/ftp/python/%FULL_VER%/%INSTALLER_NAME%"
-set "TEMP_INSTALLER=%WUWO_DIR%\%INSTALLER_NAME%"
-set "MIN_SIZE=20000000"
+REM -- Python 3.12.10 full zip (green portable, includes tkinter + pip)
+set "FULL_VER=3.12.10"
+set "ZIP_NAME=python-%FULL_VER%-amd64.zip"
+set "ZIP_URL=https://www.python.org/ftp/python/%FULL_VER%/%ZIP_NAME%"
+set "TEMP_ZIP=%WUWO_DIR%\%ZIP_NAME%"
+set "MIN_SIZE=30000000"
 
 echo ============================================================
 echo   wuwo Bootstrap Installer
@@ -86,63 +88,64 @@ if exist "%PYTHON_EXE%" (
         echo.
         goto :run_install_py
     )
-    echo [WARN] python.exe exists but not working, re-installing...
+    echo [WARN] python.exe exists but not working, re-extracting...
     rmdir /s /q "%PYTHON_DIR%" 2>nul
 )
 
-echo [2/3] Downloading Python %FULL_VER% standard installer...
+echo [2/3] Downloading Python %FULL_VER% portable zip...
+echo       ^(full zip: includes tkinter + pip, ~32 MB, no system install^)
 echo.
 
-REM -- 2a: Download installer --
-if exist "%TEMP_INSTALLER%" (
+REM -- 2a: Download zip --
+if exist "%TEMP_ZIP%" (
     set "SZ=0"
-    for %%F in ("%TEMP_INSTALLER%") do set "SZ=%%~zF"
+    for %%F in ("%TEMP_ZIP%") do set "SZ=%%~zF"
     if !SZ! LSS %MIN_SIZE% (
-        echo [INFO] Existing installer too small ^(!SZ! bytes^), re-downloading...
-        del /f /q "%TEMP_INSTALLER%"
+        echo [INFO] Existing zip too small ^(!SZ! bytes^), re-downloading...
+        del /f /q "%TEMP_ZIP%"
     ) else (
-        echo [INFO] Reusing existing installer ^(!SZ! bytes^).
-        goto :install_python
+        echo [INFO] Reusing existing zip ^(!SZ! bytes^).
+        goto :extract_python
     )
 )
 
-echo       Downloading from: %INSTALLER_URL%
-curl --ssl-no-revoke -L -o "%TEMP_INSTALLER%" "%INSTALLER_URL%" --progress-bar
+echo       Downloading from: %ZIP_URL%
+curl --ssl-no-revoke -L -o "%TEMP_ZIP%" "%ZIP_URL%" --progress-bar
 if !errorlevel! neq 0 (
     echo [ERROR] Download failed! Check network connection.
-    if exist "%TEMP_INSTALLER%" del /f /q "%TEMP_INSTALLER%"
+    if exist "%TEMP_ZIP%" del /f /q "%TEMP_ZIP%"
     goto :fail
 )
 
 REM -- Validate size --
 set "SZ=0"
-for %%F in ("%TEMP_INSTALLER%") do set "SZ=%%~zF"
+for %%F in ("%TEMP_ZIP%") do set "SZ=%%~zF"
 if !SZ! LSS %MIN_SIZE% (
-    echo [ERROR] Installer too small ^(!SZ! bytes^). Possibly corrupted.
-    del /f /q "%TEMP_INSTALLER%"
+    echo [ERROR] Zip too small ^(!SZ! bytes^). Possibly corrupted.
+    del /f /q "%TEMP_ZIP%"
     goto :fail
 )
 echo [OK] Downloaded: !SZ! bytes.
 echo.
 
-:install_python
-REM -- 2b: Silent install --
-echo [3/3 bootstrap] Silently installing Python %FULL_VER% to py_312...
-echo               ^(this may take 1-2 minutes^)
+:extract_python
+REM -- 2b: Extract --
+echo [3/3 bootstrap] Extracting Python %FULL_VER% to py_312...
 if exist "%PYTHON_DIR%" rmdir /s /q "%PYTHON_DIR%"
-"%TEMP_INSTALLER%" /quiet TargetDir="%PYTHON_DIR%" Include_pip=1 Include_tcltk=1 InstallAllUsers=0 PrependPath=0 Shortcuts=0
+mkdir "%PYTHON_DIR%"
+powershell -NoProfile -Command "Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
 if !errorlevel! neq 0 (
-    echo [ERROR] Python installation failed! exit code: !errorlevel!
+    echo [ERROR] Extraction failed!
     goto :fail
 )
 if not exist "%PYTHON_EXE%" (
-    echo [ERROR] python.exe not found after installation!
+    echo [ERROR] python.exe not found after extraction!
     goto :fail
 )
 
-REM -- Cleanup installer --
-del /f /q "%TEMP_INSTALLER%" 2>nul
-echo [OK] Python %FULL_VER% installed to: %PYTHON_DIR%
+REM -- Cleanup zip --
+del /f /q "%TEMP_ZIP%" 2>nul
+echo [OK] Python %FULL_VER% ready at: %PYTHON_DIR%
 echo.
 
 :run_install_py

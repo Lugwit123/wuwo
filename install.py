@@ -32,7 +32,7 @@ from pathlib import Path
 # ─────────────────────────────────────────────
 #  常量配置
 # ─────────────────────────────────────────────
-PYTHON_FULL_VER = "3.12.8"
+PYTHON_FULL_VER = "3.12.10"
 # 标准安装包（含 pip、tkinter、完整标准库）
 INSTALLER_NAME = f"python-{PYTHON_FULL_VER}-amd64.exe"
 INSTALLER_URL  = f"https://www.python.org/ftp/python/{PYTHON_FULL_VER}/{INSTALLER_NAME}"
