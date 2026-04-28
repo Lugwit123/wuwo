@@ -248,8 +248,8 @@ def main() -> int:
     # 确定 rez-package-source 路径
     source_dir = find_rez_package_source(args.source_dir)
     if not source_dir.exists():
-        print(f"[错误] rez-package-source 目录不存在: {source_dir}", file=sys.stderr)
-        return 1
+        print(f"[信息] rez-package-source 目录不存在，自动创建: {source_dir}")
+        source_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[信息] rez-package-source: {source_dir}")
 

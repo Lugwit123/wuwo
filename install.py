@@ -363,6 +363,15 @@ def main() -> int:
         info("--skip-packages: 跳过 rez 包拉取。")
     else:
         step(5, TOTAL_STEPS, "拉取 rez 包（l_tray / ChatRoom / ...）")
+        # 自动创建 rez-package-source 和 rez-package-release 目录
+        rez_source  = wuwo_dir.parent / "rez-package-source"
+        rez_release = wuwo_dir.parent / "rez-package-release"
+        for d in (rez_source, rez_release):
+            if not d.exists():
+                d.mkdir(parents=True, exist_ok=True)
+                ok(f"创建目录: {d}")
+            else:
+                info(f"目录已存在: {d}")
         fetch_rez_packages(python_exe, wuwo_dir)
 
     print("\n" + "=" * 60)
