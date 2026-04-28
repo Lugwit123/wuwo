@@ -1,0 +1,86 @@
+[
+    {
+        "FileHierarchy": {
+            "zhName": "",
+            "value": "文件层级",
+            "expanded": true,
+            "subs": [
+                "/(.+?)/[0-9_]*Main-production/"
+            ]
+        }
+    },
+    {
+        "MayaOutLine": {
+            "zhName": "放入",
+            "value": "maya大纲",
+            "expanded": true,
+            "subs": [
+                "['geometry']",
+                "UnrealRoot",
+                "cam_rig:rigCamera",
+                "cam_rig:rigCameraShape"
+            ]
+        }
+    },
+    {
+        "Unreal": {
+            "zhName": "",
+            "value": "Unreal",
+            "expanded": true,
+            "subs": [
+                "Content",
+                "True",
+                "Z:/Cosmos_Wartale_UE_{UEVersion[0]}_{UEVersion[2]}/Cosmos_Wartale.uproject",
+                "D:/EpicGames/UE_5.0/Engine/Binaries/Win64/UnrealEditor.exe",
+                "D:/EpicGames/UE_5.1/Engine/Binaries/Win64/UnrealEditor.exe"
+            ]
+        }
+    },
+    {
+        "ExSetting": {
+            "zhName": "",
+            "value": "导出设置",
+            "expanded": true,
+            "subs": [
+                "",
+                "_Ani",
+                "_SkeGeoAni",
+                "{RefFileDir}/{AssetName}{TposeSuffix}.fbx",
+                "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX",
+                "{self.MayaFileDir}/FBX/{ExName}{SkeletonAniSuffix}.fbx",
+                "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX/Shot_{self.ScName_Index}/{ExName}.fbx",
+                "f\"{Lugwit_publicPath}/RenderFarm/MayaToUE/P4Triggers/SkeAni_TposeRelationshipFile.json\"",
+                "f\"{Lugwit_publicPath}/RenderFarm/MayaToUE/P4Triggers/ExHis/{hostName}/{ProjectName}_ExHistoryFile.json\"",
+                "CH",
+                "PRP",
+                "BG",
+                "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX/Shot_{self.ScName_Index}/{ExName}{SkeletonAniMeshSuffix}.fbx",
+                "['镜头名','Cam','帧范围']",
+                "['镜头名','资产名']",
+                "['镜头名','资产名']",
+                "['镜头名','资产名']",
+                "['镜头名','refFileName']",
+                "角色",
+                "道具",
+                "场景",
+                "其他",
+                "cam_rig[0-9]*$",
+                "5.1",
+                "2018",
+                "([0-9]+)-",
+                "-([0-9]+)"
+            ]
+        }
+    },
+    {
+        "exampleFile": {
+            "zhName": "示例文件",
+            "value": "exampleFile",
+            "expanded": true,
+            "subs": [
+                "Z:\\test_project\\03_Main-Production\\01_episode\\CH\\CH_NvDi\\CH_NvDi.ma",
+                "Z:\\test_project\\03_Main-Production\\05_animation\\EP107\\Animation\\scenes&movies\\CW_EP107_SC003_an.ma"
+            ]
+        }
+    }
+]

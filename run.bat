@@ -1,0 +1,1 @@
+D:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\wuwo\wuwo.bat rez env python-3.11 Lugwit_Module  pywin32 l_tray -- start_tray

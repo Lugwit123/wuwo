@@ -1,0 +1,566 @@
+[
+    {
+        "FileHierarchy": {
+            "zhName": "",
+            "value": "FileHierarchy",
+            "description": "文件层级",
+            "expanded": true,
+            "subs": [
+                {
+                    "/(.+?)/[0-9_]*Main-production/": {
+                        "zhName": "项目名称",
+                        "value": "/(.+?)/[0-9_]*Main-production/",
+                        "description": "ProjectName",
+                        "expanded": true,
+                        "subs": [
+                            {
+                                ".+/[0-9_]*Main-production": {
+                                    "zhName": "项目目录",
+                                    "value": ".+/[0-9_]*Main-production",
+                                    "description": "ProjectDir",
+                                    "expanded": true,
+                                    "subs": [
+                                        {
+                                            ".+/[0-9]+_episode": {
+                                                "zhName": "资产目录",
+                                                "value": ".+/[0-9]+_episode",
+                                                "description": "AssetDir",
+                                                "expanded": true,
+                                                "subs": [
+                                                    {
+                                                        "/CH/|/PRP/|/Set/|/BG/": {
+                                                            "zhName": "资产类型",
+                                                            "value": "/CH/|/PRP/|/Set/|/BG/",
+                                                            "description": "AssetType",
+                                                            "expanded": true,
+                                                            "subs": [
+                                                                {
+                                                                    "/Ep_*[0-9]+/": {
+                                                                        "zhName": "资产集数名称",
+                                                                        "value": "/Ep_*[0-9]+/",
+                                                                        "description": "AssetEpName",
+                                                                        "expanded": true,
+                                                                        "subs": [
+                                                                            {
+                                                                                "/Ep_*[0-9]+/(.+?)/": {
+                                                                                    "zhName": "资产名称",
+                                                                                    "value": "/Ep_*[0-9]+/(.+?)/",
+                                                                                    "description": "AssetName",
+                                                                                    "expanded": true,
+                                                                                    "subs": []
+                                                                                }
+                                                                            }
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            ]
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            ".+/[0-9_]+_animation/": {
+                                                "zhName": "镜头目录",
+                                                "value": ".+/[0-9_]+_animation/",
+                                                "description": "shotDir",
+                                                "expanded": true,
+                                                "subs": [
+                                                    {
+                                                        "/Ep_*[0-9]+/": {
+                                                            "zhName": "镜头集数目录名称",
+                                                            "value": "/Ep_*[0-9]+/",
+                                                            "description": "ShotEpName",
+                                                            "expanded": true,
+                                                            "subs": [
+                                                                {
+                                                                    "Ep_*[0-9]+/(.+?)/": {
+                                                                        "zhName": "镜头阶段",
+                                                                        "value": "Ep_*[0-9]+/(.+?)/",
+                                                                        "description": "ShotStep",
+                                                                        "expanded": true,
+                                                                        "subs": [
+                                                                            {
+                                                                                "scenes&movies": {
+                                                                                    "zhName": "",
+                                                                                    "value": "scenes&movies",
+                                                                                    "description": "scenes&movies",
+                                                                                    "expanded": true,
+                                                                                    "subs": [
+                                                                                        {
+                                                                                            "sc[0-9]+[a-z]*": {
+                                                                                                "zhName": "场名称",
+                                                                                                "value": "sc[0-9]+[a-z]*",
+                                                                                                "description": "ScName",
+                                                                                                "expanded": true,
+                                                                                                "subs": []
+                                                                                            }
+                                                                                        },
+                                                                                        {
+                                                                                            "sc([0-9]+[a-z]*)": {
+                                                                                                "zhName": "场指数",
+                                                                                                "value": "sc([0-9]+[a-z]*)",
+                                                                                                "description": "ScName_Index",
+                                                                                                "expanded": true,
+                                                                                                "subs": []
+                                                                                            }
+                                                                                        }
+                                                                                    ]
+                                                                                }
+                                                                            }
+                                                                        ]
+                                                                    }
+                                                                }
+                                                            ]
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    },
+    {
+        "MayaOutLine": {
+            "zhName": "放入",
+            "value": "MayaOutLine",
+            "description": "maya大纲",
+            "expanded": true,
+            "subs": [
+                {
+                    "['geometry']": {
+                        "zhName": "几何体组",
+                        "value": "['geometry']",
+                        "description": "GeometryGroup",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "UnrealRoot": {
+                        "zhName": "骨骼组",
+                        "value": "UnrealRoot",
+                        "description": "JntGroup",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "cam_rig:rigCamera": {
+                        "zhName": "摄像机变换节点",
+                        "value": "cam_rig:rigCamera",
+                        "description": "CameraTrNode",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "cam_rig:rigCameraShape": {
+                        "zhName": "摄像机形态节点",
+                        "value": "cam_rig:rigCameraShape",
+                        "description": "CameraShapeNode",
+                        "expanded": true,
+                        "subs": []
+                    }
+                }
+            ]
+        }
+    },
+    {
+        "Unreal": {
+            "zhName": "",
+            "value": "Unreal",
+            "description": "Unreal",
+            "expanded": true,
+            "subs": [
+                {
+                    "Content": {
+                        "zhName": "UE内容浏览器目录",
+                        "value": "Content",
+                        "description": "Content",
+                        "expanded": true,
+                        "subs": [
+                            {
+                                "/Game/01_Main-Production/01_episode/Ep100/{AssetType}": {
+                                    "zhName": "UE通用资产目录",
+                                    "value": "/Game/01_Main-Production/01_episode/Ep100/{AssetType}",
+                                    "description": "unrealUsualAssetDir",
+                                    "expanded": true,
+                                    "subs": []
+                                }
+                            },
+                            {
+                                "/Game/01_Main-Production/01_episode/{AssetEpName}/{AssetType}/{AssetName}/{AssetName}.uasset": {
+                                    "zhName": "TposeUE资产组装路径",
+                                    "value": "/Game/01_Main-Production/01_episode/{AssetEpName}/{AssetType}/{AssetName}/{AssetName}.uasset",
+                                    "description": "TposeUEAssetGrpPath",
+                                    "expanded": true,
+                                    "subs": []
+                                }
+                            },
+                            {
+                                "/Game/02_Shot-Production/01_Animation/{ShotEpName}/Shot_{ScName_Index}": {
+                                    "zhName": "UE镜头目录",
+                                    "value": "/Game/02_Shot-Production/01_Animation/{ShotEpName}/Shot_{ScName_Index}",
+                                    "description": "unrealShotDir",
+                                    "expanded": true,
+                                    "subs": []
+                                }
+                            },
+                            {
+                                "/Game/02_Shot-Production/01_Animation/{self.ShotEpName}/Shot_{self.ScName_Index}/{ExName}{SkeletonAniSuffix}.uasset": {
+                                    "zhName": "骨骼动画UE组装路径",
+                                    "value": "/Game/02_Shot-Production/01_Animation/{self.ShotEpName}/Shot_{self.ScName_Index}/{ExName}{SkeletonAniSuffix}.uasset",
+                                    "description": "SkeAniUEGrpPath",
+                                    "expanded": true,
+                                    "subs": []
+                                }
+                            },
+                            {
+                                "/Game/02_Shot-Production/01_Animation/{self.ShotEpName}/Shot_{self.ScName_Index}/Shot_{self.ScName_Index}.uasset": {
+                                    "zhName": "UE关卡序列文件",
+                                    "value": "/Game/02_Shot-Production/01_Animation/{self.ShotEpName}/Shot_{self.ScName_Index}/Shot_{self.ScName_Index}.uasset",
+                                    "description": "unrealSeqFile",
+                                    "expanded": true,
+                                    "subs": []
+                                }
+                            },
+                            {
+                                "/Game/02_Shot-Production/Level/{self.ProjectName}.umap": {
+                                    "zhName": "UE关卡文件",
+                                    "value": "/Game/02_Shot-Production/Level/{self.ProjectName}.umap",
+                                    "description": "unrealLeveFile",
+                                    "expanded": true,
+                                    "subs": []
+                                }
+                            }
+                        ]
+                    }
+                },
+                {
+                    "True": {
+                        "zhName": "组装完成后是否保存UE工程",
+                        "value": "True",
+                        "description": "saveUeProject",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "Z:/Cosmos_Wartale_UE_{UEVersion[0]}_{UEVersion[2]}/Cosmos_Wartale.uproject": {
+                        "zhName": "UE工程文件",
+                        "value": "Z:/Cosmos_Wartale_UE_{UEVersion[0]}_{UEVersion[2]}/Cosmos_Wartale.uproject",
+                        "description": "UEProjectFile",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "D:/EpicGames/UE_5.0/Engine/Binaries/Win64/UnrealEditor.exe": {
+                        "zhName": "UE5.0位置",
+                        "value": "D:/EpicGames/UE_5.0/Engine/Binaries/Win64/UnrealEditor.exe",
+                        "description": "UE5.0_InsLocation",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "D:/EpicGames/UE_5.1/Engine/Binaries/Win64/UnrealEditor.exe": {
+                        "zhName": "UE5.1位置",
+                        "value": "D:/EpicGames/UE_5.1/Engine/Binaries/Win64/UnrealEditor.exe",
+                        "description": "UE5.1_InsLocation",
+                        "expanded": true,
+                        "subs": []
+                    }
+                }
+            ]
+        }
+    },
+    {
+        "ExSetting": {
+            "zhName": "",
+            "value": "ExSetting",
+            "description": "导出设置",
+            "expanded": true,
+            "subs": [
+                {
+                    "": {
+                        "zhName": "Tpose文件后缀",
+                        "value": "",
+                        "description": "TposeSuffix",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "_Ani": {
+                        "zhName": "骨骼动画文件后缀",
+                        "value": "_Ani",
+                        "description": "SkeletonAniSuffix",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "_SkeGeoAni": {
+                        "zhName": "骨骼网格体动画文件后缀",
+                        "value": "_SkeGeoAni",
+                        "description": "SkeletonAniMeshSuffix",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "{RefFileDir}/{AssetName}{TposeSuffix}.fbx": {
+                        "zhName": "TposeFbx导出路径",
+                        "value": "{RefFileDir}/{AssetName}{TposeSuffix}.fbx",
+                        "description": "TposeFbxExPath",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX": {
+                        "zhName": "动画Fbx导出目录",
+                        "value": "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX",
+                        "description": "AniFbxExDir",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "{self.MayaFileDir}/FBX/{ExName}{SkeletonAniSuffix}.fbx": {
+                        "zhName": "骨骼动画Fbx导出路径",
+                        "value": "{self.MayaFileDir}/FBX/{ExName}{SkeletonAniSuffix}.fbx",
+                        "description": "SkeAniFbxExPath",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX/Shot_{self.ScName_Index}/{ExName}.fbx": {
+                        "zhName": "摄像机Fbx导出路径",
+                        "value": "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX/Shot_{self.ScName_Index}/{ExName}.fbx",
+                        "description": "CameraFbxExPath",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "f\"{Lugwit_publicPath}/RenderFarm/MayaToUE/P4Triggers/SkeAni_TposeRelationshipFile.json\"": {
+                        "zhName": "骨骼动画Tpose关系文件",
+                        "value": "f\"{Lugwit_publicPath}/RenderFarm/MayaToUE/P4Triggers/SkeAni_TposeRelationshipFile.json\"",
+                        "description": "SkeAni_TposeRelationshipFile",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "f\"{Lugwit_publicPath}/RenderFarm/MayaToUE/P4Triggers/ExHis/{hostName}/{ProjectName}_ExHistoryFile.json\"": {
+                        "zhName": "导出历史文件",
+                        "value": "f\"{Lugwit_publicPath}/RenderFarm/MayaToUE/P4Triggers/ExHis/{hostName}/{ProjectName}_ExHistoryFile.json\"",
+                        "description": "ExHistoryFile",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "CH": {
+                        "zhName": "角色关键词",
+                        "value": "CH",
+                        "description": "character_KeyWord",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "PRP": {
+                        "zhName": "道具关键词",
+                        "value": "PRP",
+                        "description": "prop_KeyWord",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "BG": {
+                        "zhName": "场景关键字",
+                        "value": "BG",
+                        "description": "scene_KeyWord",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX/Shot_{self.ScName_Index}/{ExName}{SkeletonAniMeshSuffix}.fbx": {
+                        "zhName": "骨骼网格体动画Fbx导出路径",
+                        "value": "Z:/Cosmos_Wartale/03_Main-Production/05_animation/{self.ShotEpName}/FBX/Shot_{self.ScName_Index}/{ExName}{SkeletonAniMeshSuffix}.fbx",
+                        "description": "SkeMeshAniFbxExPath",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "['镜头名','Cam','帧范围']": {
+                        "zhName": "摄像机命名列表导出名称",
+                        "value": "['镜头名','Cam','帧范围']",
+                        "description": "cam_ExName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "['镜头名','资产名']": {
+                        "zhName": "角色命名列表导出名称",
+                        "value": "['镜头名','资产名']",
+                        "description": "character_ExName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "['镜头名','资产名']": {
+                        "zhName": "道具命名列表导出名称",
+                        "value": "['镜头名','资产名']",
+                        "description": "prop_ExName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "['镜头名','资产名']": {
+                        "zhName": "场景命名列表导出名称",
+                        "value": "['镜头名','资产名']",
+                        "description": "scene_ExName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "['镜头名','refFileName']": {
+                        "zhName": "其他命名列表导出名称",
+                        "value": "['镜头名','refFileName']",
+                        "description": "other_ExName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "角色": {
+                        "zhName": "角色命名列表导出名称",
+                        "value": "角色",
+                        "description": "character_ZhName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "道具": {
+                        "zhName": "道具中文名称",
+                        "value": "道具",
+                        "description": "prop_ZhName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "场景": {
+                        "zhName": "场景中文名称",
+                        "value": "场景",
+                        "description": "scene_ZhName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "其他": {
+                        "zhName": "其他中文名称",
+                        "value": "其他",
+                        "description": "other_ZhName",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "cam_rig[0-9]*$": {
+                        "zhName": "摄像机引用文件空间",
+                        "value": "cam_rig[0-9]*$",
+                        "description": "cam_RefFileNameSpace",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "5.1": {
+                        "zhName": "UE版本",
+                        "value": "5.1",
+                        "description": "UEVersion",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "2018": {
+                        "zhName": "Mayb版本",
+                        "value": "2018",
+                        "description": "MayaVersion",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "([0-9]+)-": {
+                        "zhName": "开始帧",
+                        "value": "([0-9]+)-",
+                        "description": "StartFrame",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "-([0-9]+)": {
+                        "zhName": "结束帧",
+                        "value": "-([0-9]+)",
+                        "description": "EndFrame",
+                        "expanded": true,
+                        "subs": []
+                    }
+                }
+            ]
+        }
+    },
+    {
+        "exampleFile": {
+            "zhName": "示例文件",
+            "value": "exampleFile",
+            "description": "exampleFile",
+            "expanded": true,
+            "subs": [
+                {
+                    "Z:\\test_project\\03_Main-Production\\01_episode\\CH\\CH_NvDi\\CH_NvDi.ma": {
+                        "zhName": "Maya资产文件",
+                        "value": "Z:\\test_project\\03_Main-Production\\01_episode\\CH\\CH_NvDi\\CH_NvDi.ma",
+                        "description": "MayaAssetFile",
+                        "expanded": true,
+                        "subs": []
+                    }
+                },
+                {
+                    "Z:\\test_project\\03_Main-Production\\05_animation\\EP107\\Animation\\scenes&movies\\CW_EP107_SC003_an.ma": {
+                        "zhName": "Maya镜头文件",
+                        "value": "Z:\\test_project\\03_Main-Production\\05_animation\\EP107\\Animation\\scenes&movies\\CW_EP107_SC003_an.ma",
+                        "description": "MayaShotFile",
+                        "expanded": true,
+                        "subs": []
+                    }
+                }
+            ]
+        }
+    }
+]

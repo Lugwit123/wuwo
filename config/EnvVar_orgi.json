@@ -1,0 +1,13 @@
+{
+    "Lugwit_publicPath": "A:\\TD",
+    "TD_DepotDir": "D:\\TD_Depot",
+    "Lugwit_mayaPluginPath": "D:\\TD_Depot\\plug_in\\Lugwit_plug\\mayaPlug",
+    "P4CHARSET": "utf8",
+    "LugwitAppDir": "D:\\TD_Depot\\Software\\Lugwit_syncPlug\\lugwit_insapp",
+    "LugwitLibDir": "D:\\TD_Depot\\Software\\Lugwit_syncPlug\\lugwit_insapp\\trayapp\\Lib",
+    "LugwitPath": "D:\\TD_Depot\\plug_in\\Lugwit_plug",
+    "NUKE_PATH": "D:\\TD_Depot\\Software\\dccData\\NukePlug;C:\\ProgramData\\Thinkbox\\Deadline10\\submitters\\Nuke",
+    "PYTHONPATH": "D:\\TD_Depot\\Software\\Lugwit_syncPlug\\lugwit_insapp\\trayapp\\Lib",
+    "DEADLINE_PATH": "D:\\TD_Depot\\Software\\dccData\\ThinkBox\\Deadline_Client\\bin",
+    "Yplug": "D:\\TD_Depot\\plug_in\\Yplug"
+}

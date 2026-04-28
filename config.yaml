@@ -1,0 +1,137 @@
+# Rez Package Management Configuration
+# =====================================
+
+# Package Directories
+# -------------------
+packages:
+  # Local packages directory (highest priority)
+  local: "packages"
+  
+  # Build packages directory (development builds)
+  build: "d:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/rez-package-build"
+  
+  # Release packages directory (stable releases)
+  release: "d:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/Lib/rez-packages-release"
+
+# Python Environment
+# ------------------
+python:
+  # Python 3.15 virtual environment
+  venv: "py_315"
+  executable: "py_315/Scripts/python.exe"
+  rez_executable: "py_315/Scripts/rez.exe"
+
+# Package Sync Settings
+# ----------------------
+sync:
+  # Auto sync packages when not found locally
+  auto_sync: true
+  
+  # Force sync even if package exists
+  force_sync: false
+  
+  # Search priority: local -> build -> release
+  search_priority:
+    - local
+    - build
+    - release
+
+# Test Packages
+# -------------
+test_packages:
+  - name: "test_package"
+    versions:
+      - "999.0"   # Release version
+      - "1000.0"  # Build version
+    description: "A simple test package for rez-next"
+    
+  - name: "maya_init"
+    versions:
+      - "999.0.0"
+    description: "Maya initialization package"
+
+# Build Settings
+# --------------
+build:
+  # Default build directory
+  output_dir: "rez-package-build"
+  
+  # Exclude patterns for build
+  exclude_patterns:
+    - "build"
+    - "build.bat"
+    - "build.py"
+    - "build_auto.bat"
+    - ".git"
+    - ".gitignore"
+    - "__pycache__"
+    - "*.pyc"
+    - "*.pyo"
+    - ".DS_Store"
+    - "Thumbs.db"
+
+# Logging
+# -------
+logging:
+  level: "INFO"
+  verbose: false
+
+# Testing
+# -------
+testing:
+  # Test 1: Package sync from release
+  test1:
+    name: "Sync from release directory"
+    package: "test_package"
+    expected_version: "999.0"
+    source: "release"
+    
+  # Test 2: Package sync from build
+  test2:
+    name: "Sync from build directory"
+    package: "test_package"
+    expected_version: "1000.0"
+    source: "build"
+    
+  # Test 3: Local package cache
+  test3:
+    name: "Use local cached package"
+    package: "test_package"
+    expected_behavior: "skip_sync"
+    
+  # Test 4: Priority resolution
+  test4:
+    name: "Package priority resolution"
+    description: "Test that build packages have higher priority than release packages"
+    steps:
+      - action: "clear_local_cache"
+        package: "test_package"
+        description: "Remove test_package from local packages directory"
+        
+      - action: "ensure_build_version"
+        package: "test_package"
+        version: "1000.0"
+        description: "Ensure version 1000.0 exists in build directory"
+        
+      - action: "ensure_release_version"
+        package: "test_package"
+        version: "999.0"
+        description: "Ensure version 999.0 exists in release directory"
+        
+      - action: "sync_package"
+        package: "test_package"
+        description: "Run sync_package.py to sync the package"
+        
+      - action: "verify_version"
+        expected_version: "1000.0"
+        expected_source: "build"
+        description: "Verify that version 1000.0 from build was synced"
+        
+    expected_result: "Build version (1000.0) should be synced instead of release version (999.0)"
+    validation:
+      - check: "local_package_exists"
+        path: "packages/test_package/1000.0"
+      - check: "version_match"
+        expected: "1000.0"
+      - check: "source_directory"
+        expected: "build"
