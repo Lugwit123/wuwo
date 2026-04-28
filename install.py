@@ -3,52 +3,49 @@
 """
 wuwo One-Click Installer
 ========================
-负责全流程自动化安装 wuwo 环境：
-  1. 下载 Python 3.12.x embeddable zip
-  2. 解压到 wuwo/py_312/
-  3. 修改 ._pth 启用 site-packages
-  4. 安装 pip 及全部依赖（rez / PyYAML / pywin32 / PySide6 / PyQt5 / requests）
-  5. 弹窗询问 rez 包路径，自动或手动更新 config.yaml
-  6. 调用 auto_fetch_packages.py 拉取所有 rez 包
+全流程自动化安装 wuwo 环境：
+  1. 下载 Python 3.12.x 标准安装包（含 pip / tkinter / 完整标准库）
+  2. 静默安装到 wuwo/py_312/
+  3. 安装依赖（rez / PyYAML / pywin32 / requests）
+  4. 弹窗询问 rez 包路径，自动或手动更新 config.yaml
+  5. 调用 auto_fetch_packages.py 拉取所有 rez 包
 
 用法（由 install.bat 调用）:
     python install.py [--wuwo-dir <path>]
 
 参数:
-    --wuwo-dir   wuwo 仓库目录（默认 = 本脚本所在目录）
+    --wuwo-dir       wuwo 仓库目录（默认 = 本脚本所在目录）
+    --skip-config    跳过 rez 路径配置弹窗（测试/CI 用）
+    --skip-packages  跳过拉取 rez 包（测试/CI 用）
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import urllib.request
-import zipfile
 from pathlib import Path
 
 # ─────────────────────────────────────────────
 #  常量配置
 # ─────────────────────────────────────────────
 PYTHON_FULL_VER = "3.12.8"
-PTH_PREFIX = "python312"
-ZIP_NAME = f"python-{PYTHON_FULL_VER}-embed-amd64.zip"
-ZIP_URL = f"https://www.python.org/ftp/python/{PYTHON_FULL_VER}/{ZIP_NAME}"
-GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
-MIN_ZIP_BYTES = 5_000_000  # 5 MB
+# 标准安装包（含 pip、tkinter、完整标准库）
+INSTALLER_NAME = f"python-{PYTHON_FULL_VER}-amd64.exe"
+INSTALLER_URL  = f"https://www.python.org/ftp/python/{PYTHON_FULL_VER}/{INSTALLER_NAME}"
+MIN_INSTALLER_BYTES = 20_000_000  # 标准安装包约 25 MB，小于 20 MB 视为损坏
 
-# PySide6 / PyQt5 由各子包（l_tray 等）按需在自己的 rez 包里声明依赖，
-# wuwo 核心安装器只安装最小必要包，保持 wuwo 仓库本身轻量。
+# PySide6 / PyQt5 由各子包按需声明依赖，wuwo 核心只装最小集合
 REQUIRED_PACKAGES = [
-    ("rez", "rez"),           # (pip install name, display name)
-    ("PyYAML", "PyYAML"),
-    ("pywin32", "pywin32"),
+    ("rez",      "rez"),
+    ("PyYAML",   "PyYAML"),
+    ("pywin32",  "pywin32"),
     ("requests", "requests"),
 ]
+
 
 # ─────────────────────────────────────────────
 #  工具函数
@@ -71,158 +68,125 @@ def warn(msg: str) -> None:
     print(f"  [WARN] {msg}", file=sys.stderr)
 
 
-def err(msg: str) -> None:
-    print(f"  [ERROR] {msg}", file=sys.stderr)
-
-
 def download_with_progress(url: str, dest: Path) -> None:
     """下载文件并显示进度条。"""
     print(f"  URL : {url}")
-    print(f"  → {dest}")
+    print(f"  →   {dest.name}")
 
     def reporthook(block_num, block_size, total_size):
         downloaded = block_num * block_size
         if total_size > 0:
             pct = min(100, downloaded * 100 // total_size)
             bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
-            print(f"\r  [{bar}] {pct:3d}%  {downloaded // 1024 // 1024} MB", end="", flush=True)
+            mb  = downloaded // 1024 // 1024
+            total_mb = total_size // 1024 // 1024
+            print(f"\r  [{bar}] {pct:3d}%  {mb}/{total_mb} MB", end="", flush=True)
 
     urllib.request.urlretrieve(url, dest, reporthook=reporthook)
-    print()  # 换行
+    print()
 
 
 def run_pip(python_exe: Path, *args: str) -> int:
     """运行 pip 命令，返回退出码。"""
     cmd = [str(python_exe), "-m", "pip"] + list(args) + ["--no-warn-script-location"]
-    result = subprocess.run(cmd)
-    return result.returncode
+    return subprocess.run(cmd).returncode
 
 
 # ─────────────────────────────────────────────
-#  Step 1: 下载 Python embeddable zip
+#  Step 1-2: 下载 + 静默安装标准 Python
 # ─────────────────────────────────────────────
 
-def download_python(wuwo_dir: Path) -> Path:
-    """下载 Python embeddable zip，若已有且大小正常则复用。返回本地 zip 路径。"""
-    temp_zip = wuwo_dir / ZIP_NAME
+def download_python_installer(wuwo_dir: Path) -> Path:
+    """下载标准安装包，已有且大小正常则复用。"""
+    dest = wuwo_dir / INSTALLER_NAME
 
-    if temp_zip.exists():
-        sz = temp_zip.stat().st_size
-        if sz >= MIN_ZIP_BYTES:
-            info(f"复用已有 zip ({sz // 1024 // 1024} MB): {temp_zip.name}")
-            return temp_zip
-        else:
-            info(f"已有 zip 过小 ({sz} bytes)，重新下载。")
-            temp_zip.unlink()
+    if dest.exists():
+        sz = dest.stat().st_size
+        if sz >= MIN_INSTALLER_BYTES:
+            info(f"复用已有安装包 ({sz // 1024 // 1024} MB): {dest.name}")
+            return dest
+        info(f"已有安装包过小 ({sz} bytes)，重新下载。")
+        dest.unlink()
 
-    download_with_progress(ZIP_URL, temp_zip)
+    download_with_progress(INSTALLER_URL, dest)
 
-    sz = temp_zip.stat().st_size
-    if sz < MIN_ZIP_BYTES:
-        temp_zip.unlink()
-        raise RuntimeError(f"下载的 zip 过小 ({sz} bytes)，可能下载失败或网络错误，请重试。")
-
+    sz = dest.stat().st_size
+    if sz < MIN_INSTALLER_BYTES:
+        dest.unlink()
+        raise RuntimeError(
+            f"下载的安装包过小 ({sz} bytes)，可能损坏，请重试。"
+        )
     ok(f"下载完成，大小 {sz // 1024 // 1024} MB")
-    return temp_zip
+    return dest
 
 
-# ─────────────────────────────────────────────
-#  Step 2: 解压
-# ─────────────────────────────────────────────
-
-def extract_python(temp_zip: Path, python_dir: Path) -> None:
-    """解压到 py_312 目录。"""
+def install_python(installer: Path, python_dir: Path) -> None:
+    """静默安装 Python 到 python_dir，包含 pip 与 tkinter。"""
     if python_dir.exists():
         info(f"删除已有目录: {python_dir}")
         shutil.rmtree(python_dir)
 
     python_dir.mkdir(parents=True)
-    info(f"解压 {temp_zip.name} → {python_dir}")
-    with zipfile.ZipFile(temp_zip, "r") as zf:
-        zf.extractall(python_dir)
-    ok("解压完成。")
+    info(f"静默安装 Python {PYTHON_FULL_VER} → {python_dir}")
+    info("（首次安装约需 1~2 分钟，请稍候…）")
 
-
-# ─────────────────────────────────────────────
-#  Step 3: 配置 ._pth 启用 site-packages
-# ─────────────────────────────────────────────
-
-def configure_pth(python_dir: Path) -> None:
-    """取消 ._pth 中 import site 的注释，启用 site-packages。"""
-    pth_file = python_dir / f"{PTH_PREFIX}._pth"
-
-    if pth_file.exists():
-        content = pth_file.read_text(encoding="utf-8")
-        new_content = re.sub(r"^\s*#\s*import site", "import site", content, flags=re.MULTILINE)
-        if new_content != content:
-            pth_file.write_text(new_content, encoding="utf-8")
-            ok(f"已启用 site-packages（取消 import site 注释）。")
-        else:
-            info("import site 已处于启用状态。")
-    else:
-        warn(f"{PTH_PREFIX}._pth 不存在，手动创建默认 ._pth 文件...")
-        pth_file.write_text(
-            f"{PTH_PREFIX}.zip\n.\nimport site\n",
-            encoding="utf-8",
+    # 静默安装参数说明：
+    #   /quiet          无 UI
+    #   TargetDir       安装目录
+    #   Include_pip=1   包含 pip
+    #   Include_tcltk=1 包含 tkinter / tcl/tk
+    #   InstallAllUsers=0  仅当前用户（无需管理员）
+    #   PrependPath=0   不修改系统 PATH
+    cmd = [
+        str(installer),
+        "/quiet",
+        f"TargetDir={python_dir}",
+        "Include_pip=1",
+        "Include_tcltk=1",
+        "InstallAllUsers=0",
+        "PrependPath=0",
+        "Shortcuts=0",
+    ]
+    result = subprocess.run(cmd, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Python 安装失败（exit {result.returncode}）。\n"
+            f"请尝试手动运行: {installer}"
         )
-        ok("已创建默认 ._pth 文件。")
+    ok(f"Python {PYTHON_FULL_VER} 安装完成。")
 
 
 # ─────────────────────────────────────────────
-#  Step 4: 安装 pip
-# ─────────────────────────────────────────────
-
-def install_pip(python_exe: Path, wuwo_dir: Path) -> None:
-    """下载并运行 get-pip.py。"""
-    get_pip_path = wuwo_dir / "get-pip.py"
-
-    if not get_pip_path.exists():
-        info(f"下载 get-pip.py ...")
-        download_with_progress(GET_PIP_URL, get_pip_path)
-
-    info("运行 get-pip.py ...")
-    ret = subprocess.run([str(python_exe), str(get_pip_path), "--no-warn-script-location"]).returncode
-    if ret != 0:
-        raise RuntimeError("pip 安装失败！")
-    ok("pip 安装成功。")
-
-
-# ─────────────────────────────────────────────
-#  Step 5: 安装依赖包
+#  Step 3: 安装依赖包
 # ─────────────────────────────────────────────
 
 def install_packages(python_exe: Path) -> None:
-    """逐个安装 REQUIRED_PACKAGES 列表。"""
+    """逐个安装 REQUIRED_PACKAGES。"""
     for pip_name, display_name in REQUIRED_PACKAGES:
         info(f"安装 {display_name} ...")
         ret = run_pip(python_exe, "install", pip_name)
         if ret != 0:
-            warn(f"{display_name} 安装失败，请稍后手动安装：pip install {pip_name}")
+            warn(f"{display_name} 安装失败，稍后可手动运行: pip install {pip_name}")
         else:
             ok(f"{display_name} 安装成功。")
 
-        # pywin32 安装后运行 post-install 脚本
+        # pywin32 安装后需执行 post-install 脚本
         if pip_name == "pywin32" and ret == 0:
-            scripts_dir = python_exe.parent / "Scripts"
-            post_install = scripts_dir / "pywin32_postinstall.py"
-            if post_install.exists():
+            post = python_exe.parent / "Scripts" / "pywin32_postinstall.py"
+            if post.exists():
                 subprocess.run(
-                    [str(python_exe), str(post_install), "-install"],
+                    [str(python_exe), str(post), "-install"],
                     capture_output=True,
                 )
                 ok("pywin32 post-install 完成。")
 
 
 # ─────────────────────────────────────────────
-#  Step 6: 弹窗询问 rez 包路径并更新 config.yaml
+#  Step 4: 弹窗询问 rez 包路径并更新 config.yaml
 # ─────────────────────────────────────────────
 
 def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
-    """弹出对话框询问是否使用默认路径，返回 True = 使用默认。
-
-    优先使用 tkinter（Python 内置，embeddable 版也支持），
-    失败时回退到命令行交互。
-    """
+    """弹出对话框询问是否使用默认路径。优先用 tkinter，失败回退命令行。"""
     build_str   = str(build_path).replace("\\", "/")
     release_str = str(release_path).replace("\\", "/")
     title = "wuwo Installer - Package Paths"
@@ -234,12 +198,12 @@ def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
         f"NO  = open config.yaml in Notepad to edit manually"
     )
 
-    # 优先使用 tkinter（内置，无需额外安装）
+    # tkinter —— 标准安装版 Python 内置，直接可用
     try:
         import tkinter as tk
         from tkinter import messagebox
         root = tk.Tk()
-        root.withdraw()          # 隐藏主窗口
+        root.withdraw()
         root.attributes("-topmost", True)
         result = messagebox.askyesno(title, msg)
         root.destroy()
@@ -247,7 +211,7 @@ def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
     except Exception as exc:
         warn(f"tkinter 弹窗失败: {exc}，使用命令行询问。")
 
-    # 回退：命令行询问
+    # 回退：命令行
     while True:
         choice = input("\n是否使用推荐默认路径？[Y/N]: ").strip().upper()
         if choice in ("Y", "YES"):
@@ -266,14 +230,12 @@ def _update_config_yaml(config_yaml: Path, build_path: Path, release_path: Path)
     content = re.sub(
         r'(^\s+build:\s+")[^"]+(")',
         lambda m: m.group(1) + build_str + m.group(2),
-        content,
-        flags=re.MULTILINE,
+        content, flags=re.MULTILINE,
     )
     content = re.sub(
         r'(^\s+release:\s+")[^"]+(")',
         lambda m: m.group(1) + release_str + m.group(2),
-        content,
-        flags=re.MULTILINE,
+        content, flags=re.MULTILINE,
     )
     config_yaml.write_text(content, encoding="utf-8")
     ok(f"config.yaml 已更新:")
@@ -288,7 +250,6 @@ def configure_rez_paths(wuwo_dir: Path) -> None:
         warn("config.yaml 不存在，跳过路径配置。")
         return
 
-    # 默认路径 = wuwo 上级目录 / rez-package-build  /  rez-packages-release
     parent = wuwo_dir.parent
     default_build   = parent / "rez-package-build"
     default_release = parent / "rez-packages-release"
@@ -297,26 +258,24 @@ def configure_rez_paths(wuwo_dir: Path) -> None:
     print(f"    packages.build   = {default_build}")
     print(f"    packages.release = {default_release}")
 
-    use_default = _ask_use_default_paths(default_build, default_release)
-
-    if use_default:
+    if _ask_use_default_paths(default_build, default_release):
         info("使用默认路径，自动更新 config.yaml ...")
         _update_config_yaml(config_yaml, default_build, default_release)
     else:
-        info("打开 Notepad 供手动编辑 config.yaml，保存并关闭后继续 ...")
+        info("打开 Notepad 供手动编辑，保存并关闭后继续 ...")
         subprocess.run(["notepad.exe", str(config_yaml)])
         info("config.yaml 编辑完成。")
 
 
 # ─────────────────────────────────────────────
-#  Step 7: 拉取 rez 包
+#  Step 5: 拉取 rez 包
 # ─────────────────────────────────────────────
 
 def fetch_rez_packages(python_exe: Path, wuwo_dir: Path) -> None:
     """调用 auto_fetch_packages.py 下载所有 rez 包。"""
     script = wuwo_dir / "auto_fetch_packages.py"
     if not script.exists():
-        warn(f"auto_fetch_packages.py 不存在，跳过包拉取。")
+        warn("auto_fetch_packages.py 不存在，跳过包拉取。")
         return
 
     info("开始从 GitHub 拉取 rez 包 ...")
@@ -329,19 +288,17 @@ def fetch_rez_packages(python_exe: Path, wuwo_dir: Path) -> None:
 
 
 # ─────────────────────────────────────────────
-#  idempotency check
+#  幂等检查
 # ─────────────────────────────────────────────
 
 def check_existing_python(python_exe: Path) -> bool:
-    """检查 python.exe 是否可用，可用则返回 True。"""
+    """python.exe 可用则返回 True。"""
     if not python_exe.exists():
         return False
     try:
         result = subprocess.run(
             [str(python_exe), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
             ver = result.stdout.strip() or result.stderr.strip()
@@ -360,24 +317,12 @@ def check_existing_python(python_exe: Path) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="wuwo One-Click Installer")
-    parser.add_argument(
-        "--wuwo-dir",
-        default=None,
-        help="wuwo 仓库目录路径（默认 = 本脚本所在目录）",
-    )
-    parser.add_argument(
-        "--skip-config",
-        action="store_true",
-        help="跳过 rez 包路径配置弹窗（用于测试/CI）",
-    )
-    parser.add_argument(
-        "--skip-packages",
-        action="store_true",
-        help="跳过从 GitHub 拉取 rez 包（用于测试/CI）",
-    )
+    parser.add_argument("--wuwo-dir",      default=None,        help="wuwo 仓库目录")
+    parser.add_argument("--skip-config",   action="store_true", help="跳过 rez 路径配置（测试/CI）")
+    parser.add_argument("--skip-packages", action="store_true", help="跳过拉取 rez 包（测试/CI）")
     args = parser.parse_args()
 
-    wuwo_dir = Path(args.wuwo_dir).resolve() if args.wuwo_dir else Path(__file__).resolve().parent
+    wuwo_dir   = Path(args.wuwo_dir).resolve() if args.wuwo_dir else Path(__file__).resolve().parent
     python_dir = wuwo_dir / "py_312"
     python_exe = python_dir / "python.exe"
 
@@ -386,45 +331,38 @@ def main() -> int:
     print(f"  wuwo 目录: {wuwo_dir}")
     print("=" * 60)
 
-    TOTAL_STEPS = 7
+    TOTAL_STEPS = 5
 
-    # ── Step 1-4: Python 环境（幂等，已安装则跳过）──
-    python_already_ok = check_existing_python(python_exe)
-
-    if not python_already_ok:
-        step(1, TOTAL_STEPS, f"下载 Python {PYTHON_FULL_VER} embeddable 包")
-        temp_zip = download_python(wuwo_dir)
-
-        step(2, TOTAL_STEPS, "解压 Python 到 py_312/")
-        extract_python(temp_zip, python_dir)
-
-        step(3, TOTAL_STEPS, f"配置 {PTH_PREFIX}._pth 启用 site-packages")
-        configure_pth(python_dir)
-
-        step(4, TOTAL_STEPS, "安装 pip")
-        install_pip(python_exe, wuwo_dir)
-
-        # 清理临时文件
-        for tmp in [temp_zip, wuwo_dir / "get-pip.py"]:
-            if tmp.exists():
-                tmp.unlink()
-                info(f"已清理: {tmp.name}")
+    # ── Step 1-2: Python 环境（幂等）──
+    if check_existing_python(python_exe):
+        info("跳过 Step 1-2（Python 已安装）。")
     else:
-        info("跳过 Step 1-4（Python 已安装）。")
+        step(1, TOTAL_STEPS, f"下载 Python {PYTHON_FULL_VER} 标准安装包")
+        installer = download_python_installer(wuwo_dir)
 
-    step(5, TOTAL_STEPS, "安装依赖包")
+        step(2, TOTAL_STEPS, f"静默安装 Python {PYTHON_FULL_VER} → py_312/")
+        install_python(installer, python_dir)
+
+        # 安装完成后清理安装包
+        installer.unlink(missing_ok=True)
+        info(f"已清理安装包: {installer.name}")
+
+    # ── Step 3: 安装依赖包 ──
+    step(3, TOTAL_STEPS, "安装依赖包")
     install_packages(python_exe)
 
+    # ── Step 4: 配置 rez 路径 ──
     if args.skip_config:
-        info("--skip-config: 跳过 rez 包路径配置。")
+        info("--skip-config: 跳过 rez 路径配置。")
     else:
-        step(6, TOTAL_STEPS, "配置 rez 包路径 (config.yaml)")
+        step(4, TOTAL_STEPS, "配置 rez 包路径 (config.yaml)")
         configure_rez_paths(wuwo_dir)
 
+    # ── Step 5: 拉取 rez 包 ──
     if args.skip_packages:
         info("--skip-packages: 跳过 rez 包拉取。")
     else:
-        step(7, TOTAL_STEPS, "拉取 rez 包（l_tray / ChatRoom / ...)")
+        step(5, TOTAL_STEPS, "拉取 rez 包（l_tray / ChatRoom / ...）")
         fetch_rez_packages(python_exe, wuwo_dir)
 
     print("\n" + "=" * 60)
@@ -437,7 +375,6 @@ def main() -> int:
     print("  启动 wuwo 环境请运行:")
     print(f"    {wuwo_dir / 'wuwo.bat'}")
     print("=" * 60)
-
     return 0
 
 
