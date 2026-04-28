@@ -41,12 +41,12 @@ ZIP_URL = f"https://www.python.org/ftp/python/{PYTHON_FULL_VER}/{ZIP_NAME}"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 MIN_ZIP_BYTES = 5_000_000  # 5 MB
 
+# PySide6 / PyQt5 由各子包（l_tray 等）按需在自己的 rez 包里声明依赖，
+# wuwo 核心安装器只安装最小必要包，保持 wuwo 仓库本身轻量。
 REQUIRED_PACKAGES = [
     ("rez", "rez"),           # (pip install name, display name)
     ("PyYAML", "PyYAML"),
     ("pywin32", "pywin32"),
-    ("PySide6", "PySide6"),
-    ("PyQt5", "PyQt5"),
     ("requests", "requests"),
 ]
 
@@ -218,9 +218,14 @@ def install_packages(python_exe: Path) -> None:
 # ─────────────────────────────────────────────
 
 def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
-    """弹出 MessageBox 询问是否使用默认路径，返回 True = 使用默认。"""
+    """弹出对话框询问是否使用默认路径，返回 True = 使用默认。
+
+    优先使用 tkinter（Python 内置，embeddable 版也支持），
+    失败时回退到命令行交互。
+    """
     build_str   = str(build_path).replace("\\", "/")
     release_str = str(release_path).replace("\\", "/")
+    title = "wuwo Installer - Package Paths"
     msg = (
         f"Use recommended default paths for rez packages?\n\n"
         f"  build:   {build_str}\n"
@@ -229,21 +234,18 @@ def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
         f"NO  = open config.yaml in Notepad to edit manually"
     )
 
-    # 优先使用 ctypes 调用 MessageBoxW（无需额外依赖）
+    # 优先使用 tkinter（内置，无需额外安装）
     try:
-        import ctypes
-        MB_YESNO = 0x00000004
-        MB_ICONQUESTION = 0x00000020
-        result = ctypes.windll.user32.MessageBoxW(
-            0,
-            msg,
-            "wuwo Installer - Package Paths",
-            MB_YESNO | MB_ICONQUESTION,
-        )
-        IDYES = 6
-        return result == IDYES
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()          # 隐藏主窗口
+        root.attributes("-topmost", True)
+        result = messagebox.askyesno(title, msg)
+        root.destroy()
+        return result
     except Exception as exc:
-        warn(f"无法弹出 GUI 对话框: {exc}，将使用命令行询问。")
+        warn(f"tkinter 弹窗失败: {exc}，使用命令行询问。")
 
     # 回退：命令行询问
     while True:
@@ -363,12 +365,21 @@ def main() -> int:
         default=None,
         help="wuwo 仓库目录路径（默认 = 本脚本所在目录）",
     )
+    parser.add_argument(
+        "--skip-config",
+        action="store_true",
+        help="跳过 rez 包路径配置弹窗（用于测试/CI）",
+    )
+    parser.add_argument(
+        "--skip-packages",
+        action="store_true",
+        help="跳过从 GitHub 拉取 rez 包（用于测试/CI）",
+    )
     args = parser.parse_args()
 
     wuwo_dir = Path(args.wuwo_dir).resolve() if args.wuwo_dir else Path(__file__).resolve().parent
     python_dir = wuwo_dir / "py_312"
     python_exe = python_dir / "python.exe"
-    temp_zip   = wuwo_dir / ZIP_NAME
 
     print("=" * 60)
     print("  wuwo One-Click Installer")
@@ -404,11 +415,17 @@ def main() -> int:
     step(5, TOTAL_STEPS, "安装依赖包")
     install_packages(python_exe)
 
-    step(6, TOTAL_STEPS, "配置 rez 包路径 (config.yaml)")
-    configure_rez_paths(wuwo_dir)
+    if args.skip_config:
+        info("--skip-config: 跳过 rez 包路径配置。")
+    else:
+        step(6, TOTAL_STEPS, "配置 rez 包路径 (config.yaml)")
+        configure_rez_paths(wuwo_dir)
 
-    step(7, TOTAL_STEPS, "拉取 rez 包（l_tray / ChatRoom / ...）")
-    fetch_rez_packages(python_exe, wuwo_dir)
+    if args.skip_packages:
+        info("--skip-packages: 跳过 rez 包拉取。")
+    else:
+        step(7, TOTAL_STEPS, "拉取 rez 包（l_tray / ChatRoom / ...)")
+        fetch_rez_packages(python_exe, wuwo_dir)
 
     print("\n" + "=" * 60)
     print("  安装完成！")
