@@ -185,15 +185,17 @@ def install_packages(python_exe: Path) -> None:
 #  Step 4: 弹窗询问 rez 包路径并更新 config.yaml
 # ─────────────────────────────────────────────
 
-def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
+def _ask_use_default_paths(build_path: Path, release_path: Path, third_party_path: Path) -> bool:
     """弹出对话框询问是否使用默认路径。优先用 tkinter，失败回退命令行。"""
-    build_str   = str(build_path).replace("\\", "/")
-    release_str = str(release_path).replace("\\", "/")
+    build_str         = str(build_path).replace("\\", "/")
+    release_str       = str(release_path).replace("\\", "/")
+    third_party_str   = str(third_party_path).replace("\\", "/")
     title = "wuwo Installer - Package Paths"
     msg = (
         f"Use recommended default paths for rez packages?\n\n"
-        f"  build:   {build_str}\n"
-        f"  release: {release_str}\n\n"
+        f"  build:         {build_str}\n"
+        f"  release:       {release_str}\n"
+        f"  third_party:   {third_party_str}\n\n"
         f"YES = use defaults (auto-update config.yaml)\n"
         f"NO  = open config.yaml in Notepad to edit manually"
     )
@@ -221,26 +223,33 @@ def _ask_use_default_paths(build_path: Path, release_path: Path) -> bool:
         print("  请输入 Y 或 N。")
 
 
-def _update_config_yaml(config_yaml: Path, build_path: Path, release_path: Path) -> None:
-    """用正则替换 config.yaml 中的 build/release 路径。"""
-    build_str   = str(build_path).replace("\\", "/")
-    release_str = str(release_path).replace("\\", "/")
+def _update_config_yaml(config_yaml: Path, build_path: Path, release_path: Path, third_party_path: Path) -> None:
+    """用正则替换 config.yaml 中的 build/release/third_party 路径。"""
+    build_str         = str(build_path).replace("\\", "/")
+    release_str       = str(release_path).replace("\\", "/")
+    third_party_str   = str(third_party_path).replace("\\", "/")
 
     content = config_yaml.read_text(encoding="utf-8")
     content = re.sub(
-        r'(^\s+build:\s+")[^"]+(")',
+        r'(^\s+build:\s+")[^"]*(")' ,
         lambda m: m.group(1) + build_str + m.group(2),
         content, flags=re.MULTILINE,
     )
     content = re.sub(
-        r'(^\s+release:\s+")[^"]+(")',
+        r'(^\s+release:\s+")[^"]*(")' ,
         lambda m: m.group(1) + release_str + m.group(2),
+        content, flags=re.MULTILINE,
+    )
+    content = re.sub(
+        r'(^\s+third_party:\s+")[^"]*(")' ,
+        lambda m: m.group(1) + third_party_str + m.group(2),
         content, flags=re.MULTILINE,
     )
     config_yaml.write_text(content, encoding="utf-8")
     ok(f"config.yaml 已更新:")
-    ok(f"  packages.build   = {build_str}")
-    ok(f"  packages.release = {release_str}")
+    ok(f"  packages.build         = {build_str}")
+    ok(f"  packages.release       = {release_str}")
+    ok(f"  packages.third_party   = {third_party_str}")
 
 
 def read_config_paths(wuwo_dir: Path) -> dict:
@@ -278,16 +287,18 @@ def configure_rez_paths(wuwo_dir: Path) -> None:
         return
 
     parent = wuwo_dir.parent
-    default_build   = parent / "rez-package-build"
-    default_release = parent / "rez-package-release"
+    default_build         = parent / "rez-package-build"
+    default_release       = parent / "rez-package-release"
+    default_third_party   = parent / "rez-package-3rd"
 
     print(f"\n  推荐默认路径:")
-    print(f"    packages.build   = {default_build}")
-    print(f"    packages.release = {default_release}")
+    print(f"    packages.build         = {default_build}")
+    print(f"    packages.release       = {default_release}")
+    print(f"    packages.third_party   = {default_third_party}")
 
-    if _ask_use_default_paths(default_build, default_release):
+    if _ask_use_default_paths(default_build, default_release, default_third_party):
         info("使用默认路径，自动更新 config.yaml ...")
-        _update_config_yaml(config_yaml, default_build, default_release)
+        _update_config_yaml(config_yaml, default_build, default_release, default_third_party)
     else:
         info("打开 Notepad 供手动编辑，保存并关闭后继续 ...")
         subprocess.run(["notepad.exe", str(config_yaml)])

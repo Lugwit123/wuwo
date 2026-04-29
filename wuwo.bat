@@ -76,6 +76,14 @@ for /f "tokens=1*" %%A in ("%_REST%") do (
         goto :eof
     )
 )
+REM Auto-fetch pip deps for "rez env ..." calls
+for /f "tokens=1*" %%A in ("%_REST%") do (
+    if /i "%%~A"=="env" (
+        echo [wuwo] Auto-fetching pip deps for: rez env %%B
+        "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "%%B"
+        if errorlevel 1 echo [wuwo] WARNING: Some pip deps could not be installed. Continuing...
+    )
+)
 REM Run native rez command with full forwarded arguments
 call "%REZ_EXE%" %_REST%
 goto :eof

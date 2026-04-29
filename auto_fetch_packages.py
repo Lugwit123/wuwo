@@ -15,16 +15,17 @@ import argparse
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 GITHUB_OWNER = "Lugwit123"
 GITHUB_BASE_URL = f"https://github.com/{GITHUB_OWNER}"
 
-# 包名 → GitHub 仓库名 的映射
+# 一方包：从 Lugwit123 GitHub 克隆安装
 # repo: GitHub 仓库名（与包名同名）
 # init_bat: clone 后需要运行的初始化脚本（相对于包目录），None 表示无需初始化
-PACKAGE_REGISTRY: Dict[str, dict] = {
+_GITHUB_PACKAGES: Dict[str, Any] = {
     "ChatRoom": {"repo": "ChatRoom", "init_bat": None},
     "L_Tools": {"repo": "L_Tools", "init_bat": None},
     "Lugwit_Module": {"repo": "Lugwit_Module", "init_bat": None},
@@ -36,14 +37,35 @@ PACKAGE_REGISTRY: Dict[str, dict] = {
     "lugwit_auth": {"repo": "lugwit_auth", "init_bat": None},
     "postgresql": {"repo": "postgresql", "init_bat": "999.0/init.bat"},
     "pyfory": {"repo": "pyfory", "init_bat": None},
-    "pyqt5": {"pip_name": "PyQt5==5.15.11", "python_ver": "3.12"},  # pip 包
-    "pyside6": {"pip_name": "PySide6==6.7.0", "python_ver": "3.12"},  # pip 包
     "pytracemp": {"repo": "pytracemp", "init_bat": None},
-    "pywin32": {"pip_name": "pywin32", "python_ver": "3.12"},  # pip 包
-    "psutil": {"pip_name": "psutil", "python_ver": "3.12"},  # pip 包
     "start_multi_app": {"repo": "start_multi_app", "init_bat": None},
     "view_pkl_tool": {"repo": "view_pkl_tool", "init_bat": None},
 }
+
+# 第三方包：通过 pip 安装，自动生成 rez 包装到 rez-package-3rd
+# pip_name: pip 包名（可含版本约束，如 PyQt5==5.15.11）
+# python_ver: 适配的 Python 版本
+_PIP_PACKAGES: Dict[str, Any] = {
+    "psutil":   {"pip_name": "psutil",          "python_ver": "3.12"},
+    "pyqt5":    {"pip_name": "PyQt5==5.15.11",  "python_ver": "3.12"},
+    "pyside6":  {"pip_name": "PySide6==6.7.0",  "python_ver": "3.12"},
+    "pywin32":  {"pip_name": "pywin32",          "python_ver": "3.12"},
+    "pyyaml":   {"pip_name": "PyYAML",           "python_ver": "3.12"},
+    "watchdog": {"pip_name": "watchdog",         "python_ver": "3.12"},
+}
+
+# 合并为统一注册表（下游代码不需要改动）
+PACKAGE_REGISTRY: Dict[str, Any] = {**_GITHUB_PACKAGES, **_PIP_PACKAGES}
+
+
+def is_pypi_package(name: str, timeout: int = 5) -> bool:
+    """查询 PyPI 判断包名是否存在于公共索引上。"""
+    url = f"https://pypi.org/pypi/{name}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):
+            return True
+    except Exception:
+        return False
 
 
 def find_rez_package_source(override: Optional[str] = None) -> Path:
@@ -223,6 +245,33 @@ def get_requires_for_package(pkg_name: str, source_dir: Path) -> List[str]:
     return names
 
 
+def collect_transitive_pip_deps(start_requires: List[str], source_dir: Path) -> List[str]:
+    """从 start_requires 出发递归收集所有传递性 pip 包依赖。
+
+    对每个 GitHub 包，继续读取其 requires 并递归处理，
+    直到没有新包为止。pip 包自身不再继续展开。
+    """
+    pip_deps: List[str] = []
+    visited: set[str] = set()
+    queue: List[str] = list(start_requires)
+
+    while queue:
+        pkg = queue.pop(0)
+        if pkg in visited:
+            continue
+        visited.add(pkg)
+
+        if pkg in _PIP_PACKAGES:
+            pip_deps.append(pkg)
+        elif pkg in _GITHUB_PACKAGES:
+            sub = get_requires_for_package(pkg, source_dir)
+            for r in sub:
+                if r not in visited:
+                    queue.append(r)
+
+    return pip_deps
+
+
 def check_python_executable() -> Optional[Path]:
     """查找当前 Python 可执行文件路径。"""
     try:
@@ -333,10 +382,44 @@ def main() -> int:
         metavar="NAME",
         help="读取该包的 requires，只下载其依赖中在 REGISTRY 里注册的缺失包",
     )
+    parser.add_argument(
+        "--for-rez-env",
+        metavar="REZ_ENV_ARGS",
+        help="解析 'rez env' 参数字符串，自动安装所有传递性 pip 包依赖（由 wuwo.bat 调用）",
+    )
 
     args = parser.parse_args()
 
-    # 确定 rez-package-source 路径
+    # --for-rez-env 模式：解析 rez env 参数字符串，提取包名并安装其传递性 pip 依赖
+    if args.for_rez_env:
+        source_dir = find_rez_package_source(args.source_dir)
+        # 取 '--' 之前的部分，去除版本约束（如 python-3.12 → python）
+        raw_args = args.for_rez_env.split("--")[0]
+        tokens = raw_args.split()
+        pkg_names = [t.split("-")[0] for t in tokens if not t.startswith("-")]
+        # 只处理注册表里有的包
+        known = [p for p in pkg_names if p in _GITHUB_PACKAGES]
+        if not known:
+            print("[for-rez-env] 未发现注册表内的 GitHub 包，跳过")
+            return 0
+        print(f"[for-rez-env] 检测到包: {known}，递归收集 pip 依赖...")
+        pip_deps: List[str] = collect_transitive_pip_deps(known, source_dir)
+        if not pip_deps:
+            print("[for-rez-env] 无需安装额外 pip 包")
+            return 0
+        print(f"[for-rez-env] 将安装 pip 包: {pip_deps}")
+        third_party_dir = source_dir.parent / "rez-package-3rd"
+        third_party_dir.mkdir(parents=True, exist_ok=True)
+        fail = 0
+        for pkg in pip_deps:
+            meta = PACKAGE_REGISTRY[pkg]
+            ok, msg = install_pip_package_to_3rd(pkg, meta, third_party_dir)
+            print(f"  [{'✓' if ok else '✗'}] {pkg}: {msg}")
+            if not ok:
+                fail += 1
+        return 1 if fail else 0
+
+    # --for-package / 全量模式：确定 rez-package-source 路径
     source_dir = find_rez_package_source(args.source_dir)
     if not source_dir.exists():
         print(f"[信息] rez-package-source 目录不存在，自动创建: {source_dir}")
@@ -350,23 +433,49 @@ def main() -> int:
         if not requires:
             print(f"[警告] 无法读取 {args.for_package} 的 requires，回退到全量模式", file=sys.stderr)
         else:
-            # 区分 GitHub 包和 pip 包
-            github_deps = [r for r in requires if r in PACKAGE_REGISTRY and "repo" in PACKAGE_REGISTRY[r]]
-            pip_deps = [r for r in requires if r in PACKAGE_REGISTRY and "pip_name" in PACKAGE_REGISTRY[r]]
+            # 区分 GitHub 包、pip 包和未在注册表中的依赖
+            github_deps = [r for r in requires if r in _GITHUB_PACKAGES]
+            # 只取直接 requires 里的 pip 包，不递归进子包
+            # （子包的 pip 依赖由 --for-rez-env 在各自的 rez env 调用时处理）
+            pip_deps    = [r for r in requires if r in _PIP_PACKAGES]
             not_in_registry = [r for r in requires if r not in PACKAGE_REGISTRY]
-            
+
+            # 对于未注册的依赖：自动查询 PyPI，如果存在就动态加入 pip_deps
             if not_in_registry:
-                print(f"[信息] 以下依赖不在下载注册表中（略过）: {not_in_registry}")
+                print(f"[信息] 以下依赖不在注册表中，查询 PyPI…: {not_in_registry}")
+                for r in not_in_registry:
+                    if is_pypi_package(r):
+                        print(f"        ✅ {r} 在 PyPI 上存在，加入 pip 安装列表")
+                        pip_deps.append(r)
+                        # 动态加入注册表（仅当前运行有效）
+                        PACKAGE_REGISTRY[r] = {"pip_name": r, "python_ver": "3.12"}
+                    else:
+                        print(f"        ⚠️  {r} 在 PyPI 上未找到，跳过")
+
             if github_deps:
                 print(f"[信息] 将检查 GitHub 包: {github_deps}")
             if pip_deps:
                 print(f"[信息] 将检查 pip 包: {pip_deps}")
-            
-            # 对于 --for-package，我们分别处理两种类型的包
+
+            # 对于 --for-package，分别处理两种类型的包
             args.packages = github_deps or None  # GitHub 包走原有 clone 逻辑
             args.pip_packages = pip_deps  # pip 包单独处理
 
-    # 扫描包状态
+    # 将 --package 指定的包按类型拆分（非 --for-package 模式）
+    if not args.for_package and args.packages:
+        extra_pip: list[str] = []
+        github_only: list[str] = []
+        for p in args.packages:
+            if p in _PIP_PACKAGES:
+                extra_pip.append(p)
+            else:
+                github_only.append(p)
+        args.packages = github_only or None
+        # 合并到 pip_packages（可能已由 --for-package 设置）
+        existing_pip: List[str] = getattr(args, "pip_packages", None) or []
+        args.pip_packages = existing_pip + extra_pip
+
+    # 扫描包状态（仅 GitHub 包）
     existing, missing = check_missing_packages(source_dir, args.packages)
 
     # --force 模式：将已存在的包也视为需要处理
