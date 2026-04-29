@@ -11,7 +11,7 @@ packages:
   build: "//10.219.191.222/d/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-package-build"
   
   # Release packages directory (stable releases)
-  release: "//10.219.191.222/d/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-packages-release"
+  release: "//10.219.191.222/d/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-package-release"
 
 # Python Environment
 # ------------------

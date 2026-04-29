@@ -22,6 +22,14 @@ from typing import Any, Dict, List, Optional, Tuple
 GITHUB_OWNER = "Lugwit123"
 GITHUB_BASE_URL = f"https://github.com/{GITHUB_OWNER}"
 
+# pip 镜像列表：依次尝试，任意一个成功即可
+PIP_INDEX_URLS = [
+    "https://pypi.tuna.tsinghua.edu.cn/simple",    # 清华
+    "https://mirrors.aliyun.com/pypi/simple/",     # 阿里云
+    "https://pypi.mirrors.ustc.edu.cn/simple/",   # 中科大
+    "https://pypi.org/simple",                     # 官方
+]
+
 # 一方包：从 Lugwit123 GitHub 克隆安装
 # repo: GitHub 仓库名（与包名同名）
 # init_bat: clone 后需要运行的初始化脚本（相对于包目录），None 表示无需初始化
@@ -54,8 +62,27 @@ _PIP_PACKAGES: Dict[str, Any] = {
     "watchdog": {"pip_name": "watchdog",         "python_ver": "3.12"},
 }
 
+# nuget 包：下载全量绿色 Python 包到 rez-package-3rd（优先复用已有 wuwo/py_312，避免重复下载）
+_NUGET_PACKAGES: Dict[str, Any] = {
+    "python": {
+        "nuget_name": "python",
+        "nuget_ver": "3.12.10",
+        "rez_ver": "3.12.10",
+        "description": "Python 3.12.10 portable (green, no system install)",
+    },
+}
+
 # 合并为统一注册表（下游代码不需要改动）
-PACKAGE_REGISTRY: Dict[str, Any] = {**_GITHUB_PACKAGES, **_PIP_PACKAGES}
+PACKAGE_REGISTRY: Dict[str, Any] = {**_GITHUB_PACKAGES, **_PIP_PACKAGES, **_NUGET_PACKAGES}
+
+
+def _show_error_popup(title: str, message: str) -> None:
+    """在 Windows 上弹出错误对话框（MB_ICONERROR）。非 Windows 或无 GUI 时静默。"""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # 0x10 = MB_ICONERROR
+    except Exception:
+        pass
 
 
 def is_pypi_package(name: str, timeout: int = 5) -> bool:
@@ -309,19 +336,30 @@ def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path)
         return False, "找不到 Python 可执行文件"
 
     print(f"      pip install {pip_name} → {hidden_dir}")
-    try:
-        result = subprocess.run(
-            [str(python_exe), "-m", "pip", "install", pip_name,
-             "--target", str(hidden_dir),
-             "--no-warn-script-location", "--quiet"],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            return False, f"pip install 失败: {result.stderr.strip()}"
-    except subprocess.TimeoutExpired:
-        return False, "pip install 超时（120s）"
-    except Exception as e:
-        return False, f"pip install 异常: {e}"
+    last_err = ""
+    mirror_labels = ["清华", "阿里云", "中科大", "PyPI 官方"]
+    for idx_url, label in zip(PIP_INDEX_URLS, mirror_labels):
+        try:
+            result = subprocess.run(
+                [str(python_exe), "-m", "pip", "install", pip_name,
+                 "--target", str(hidden_dir),
+                 "-i", idx_url,
+                 "--no-warn-script-location", "--quiet"],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode == 0:
+                print(f"      [{label} 成功]")
+                break
+            last_err = result.stderr.strip()
+            print(f"      [{label} 失败] {last_err[:120]}")
+        except subprocess.TimeoutExpired:
+            last_err = f"{label} pip install 超时（300s）"
+            print(f"      [{label} 超时]")
+        except Exception as e:
+            last_err = f"{label} pip install 异常: {e}"
+            print(f"      [{label} 异常] {e}")
+    else:
+        return False, f"pip install 失败 (全部 {len(PIP_INDEX_URLS)} 个镜像失败): {last_err}"
 
     # 生成 rez package.py
     pkg_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +381,131 @@ def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path)
     )
 
     return True, f"安装完成: {pkg_dir}"
+
+
+def _write_python_rez_wrapper(pkg_dir: Path, python_root: Path, rez_ver: str) -> Tuple[bool, str]:
+    """用现有 Python 安装目录生成 rez package.py（不重复下载）。"""
+    root_str     = str(python_root).replace("\\", "/")
+    scripts_str  = str(python_root / "Scripts").replace("\\", "/")
+    lib_str      = str(python_root / "Lib").replace("\\", "/")
+    site_str     = str(python_root / "Lib" / "site-packages").replace("\\", "/")
+    (pkg_dir / "package.py").write_text(
+        f'# -*- coding: utf-8 -*-\n'
+        f'name = "python"\n'
+        f'version = "{rez_ver}"\n'
+        f'description = "Python {rez_ver} (wuwo py_312, no system install)"\n'
+        f'build_command = False\n'
+        f'cachable = False\n'
+        f'relocatable = False\n'
+        f'\n'
+        f'def commands():\n'
+        f'    env.PATH.prepend("{root_str}")\n'
+        f'    env.PATH.prepend("{scripts_str}")\n'
+        f'    env.PYTHONPATH.prepend("{lib_str}")\n'
+        f'    env.PYTHONPATH.prepend("{site_str}")\n'
+        f'    alias("python", "{root_str}/python.exe")\n'
+        f'    alias("python3", "{root_str}/python.exe")\n'
+        f'    alias("pip", "{scripts_str}/pip.exe")\n',
+        encoding="utf-8",
+    )
+    return True, f"python rez 包装创建完成 (指向 {python_root})"
+
+
+def _download_nuget_python(pkg_name: str, meta: dict, pkg_dir: Path, third_party_dir: Path) -> Tuple[bool, str]:
+    """从 nuget 下载 Python 全量包并解压到 pkg_dir。"""
+    import zipfile
+    nuget_name = meta.get("nuget_name", pkg_name)
+    nuget_ver  = meta.get("nuget_ver", "3.12.10")
+    rez_ver    = meta.get("rez_ver", nuget_ver)
+    url        = f"https://www.nuget.org/api/v2/package/{nuget_name}/{nuget_ver}"
+    nupkg_file = third_party_dir / f"{nuget_name}.{nuget_ver}.nupkg"
+    extract_tmp = third_party_dir / f".{nuget_name}_tmp"
+
+    print(f"      从 nuget 下载 Python {nuget_ver} ...")
+    print(f"      URL: {url}")
+    try:
+        urllib.request.urlretrieve(url, str(nupkg_file))
+    except Exception as e:
+        return False, f"下载失败: {e}"
+
+    sz = nupkg_file.stat().st_size if nupkg_file.exists() else 0
+    if sz < 5_000_000:
+        nupkg_file.unlink(missing_ok=True)
+        return False, f"下载文件过小 ({sz} bytes)，可能损坏"
+
+    try:
+        if extract_tmp.exists():
+            shutil.rmtree(extract_tmp)
+        extract_tmp.mkdir(parents=True)
+        with zipfile.ZipFile(str(nupkg_file), "r") as zf:
+            zf.extractall(str(extract_tmp))
+    except Exception as e:
+        nupkg_file.unlink(missing_ok=True)
+        return False, f"解压失败: {e}"
+    finally:
+        if nupkg_file.exists():
+            nupkg_file.unlink(missing_ok=True)
+
+    tools_dir = extract_tmp / "tools"
+    src_dir = tools_dir if (tools_dir / "python.exe").exists() else (
+        extract_tmp if (extract_tmp / "python.exe").exists() else None
+    )
+    if src_dir is None:
+        shutil.rmtree(extract_tmp, ignore_errors=True)
+        return False, "nuget 包结构异常：python.exe 未找到"
+
+    for item in src_dir.iterdir():
+        dst = pkg_dir / item.name
+        if dst.exists():
+            shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
+        shutil.move(str(item), str(dst))
+    shutil.rmtree(extract_tmp, ignore_errors=True)
+
+    if not (pkg_dir / "python.exe").exists():
+        return False, "解压后未找到 python.exe"
+
+    # 生成 rez package.py（使用 {root} 相对路径，可重定位）
+    (pkg_dir / "package.py").write_text(
+        f'# -*- coding: utf-8 -*-\n'
+        f'name = "python"\n'
+        f'version = "{rez_ver}"\n'
+        f'description = "{meta.get("description", "Python " + rez_ver)}"\n'
+        f'build_command = False\n'
+        f'cachable = True\n'
+        f'relocatable = True\n'
+        f'\n'
+        f'def commands():\n'
+        f'    env.PATH.prepend("{{root}}")\n'
+        f'    env.PATH.prepend("{{root}}/Scripts")\n'
+        f'    env.PYTHONPATH.prepend("{{root}}/Lib")\n'
+        f'    env.PYTHONPATH.prepend("{{root}}/Lib/site-packages")\n'
+        f'    alias("python", "{{root}}/python.exe")\n'
+        f'    alias("python3", "{{root}}/python.exe")\n'
+        f'    alias("pip", "{{root}}/Scripts/pip.exe")\n',
+        encoding="utf-8",
+    )
+    return True, f"python 安装完成 (nuget): {pkg_dir}"
+
+
+def install_nuget_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path) -> Tuple[bool, str]:
+    """安装 nuget 包（如 python）到 rez-package-3rd。
+
+    优先复用 wuwo/py_312（只写 package.py wrapper），不存在时才下载 nuget 包。
+    """
+    rez_ver = meta.get("rez_ver", "3.12.10")
+    pkg_dir = third_party_dir / pkg_name / rez_ver
+
+    if (pkg_dir / "package.py").exists():
+        return True, f"已存在: {pkg_dir}"
+
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+
+    wuwo_dir = Path(__file__).resolve().parent
+    py312_exe = wuwo_dir / "py_312" / "python.exe"
+    if py312_exe.exists():
+        return _write_python_rez_wrapper(pkg_dir, py312_exe.parent, rez_ver)
+
+    return _download_nuget_python(pkg_name, meta, pkg_dir, third_party_dir)
 
 
 def main() -> int:
@@ -429,15 +592,56 @@ def main() -> int:
 
     # --for-package 模式：读取目标包 requires，只处理其在 REGISTRY 中的依赖
     if args.for_package:
+        # 若目标包在 _GITHUB_PACKAGES 但本地不存在，先克隆它再读 requires
+        if args.for_package in _GITHUB_PACKAGES:
+            pkg_dir = source_dir / args.for_package
+            if not pkg_dir.exists():
+                print(f"[信息] {args.for_package} 不在 rez-package-source，先克隆...")
+                if _check_git_available():
+                    _info = _GITHUB_PACKAGES[args.for_package]
+                    _ok, _msg = clone_package(args.for_package, _info["repo"], source_dir)
+                    print(f"  [{'OK' if _ok else 'WARN'}] {_msg}")
+                else:
+                    print("[WARN] git 不可用，无法克隆目标包")
+
         requires = get_requires_for_package(args.for_package, source_dir)
         if not requires:
-            print(f"[警告] 无法读取 {args.for_package} 的 requires，回退到全量模式", file=sys.stderr)
+            # 诊断根本原因
+            pkg_dir = source_dir / args.for_package
+            if not pkg_dir.exists():
+                reason = (
+                    f"目录不存在: {pkg_dir}\n"
+                    f"git clone 失败或 rez-package-source 路径配置有误。"
+                )
+            else:
+                pkg_files = list(pkg_dir.glob("*/package.py"))
+                if not pkg_files:
+                    reason = (
+                        f"未找到 {args.for_package}/*/package.py\n"
+                        f"目录存在但没有版本子目录或 package.py。"
+                    )
+                else:
+                    reason = (
+                        f"{pkg_files[0]} 中 requires 为空或解析失败。\n"
+                        f"请检查 package.py 的 requires 列表是否正确。"
+                    )
+            err_msg = (
+                f"[错误] 无法读取 {args.for_package} 的 requires\n\n"
+                f"原因: {reason}\n\n"
+                f"pip / nuget 包安装已跳过，托盘启动可能失败。\n"
+                f"请修复上述问题后重新运行 install.bat。"
+            )
+            print(err_msg, file=sys.stderr)
+            _show_error_popup(f"wuwo: {args.for_package} 依赖读取失败", err_msg)
+            args.pip_packages = []
+            args.nuget_packages = []
         else:
             # 区分 GitHub 包、pip 包和未在注册表中的依赖
             github_deps = [r for r in requires if r in _GITHUB_PACKAGES]
             # 只取直接 requires 里的 pip 包，不递归进子包
             # （子包的 pip 依赖由 --for-rez-env 在各自的 rez env 调用时处理）
             pip_deps    = [r for r in requires if r in _PIP_PACKAGES]
+            nuget_deps  = [r for r in requires if r in _NUGET_PACKAGES]
             not_in_registry = [r for r in requires if r not in PACKAGE_REGISTRY]
 
             # 对于未注册的依赖：自动查询 PyPI，如果存在就动态加入 pip_deps
@@ -456,10 +660,13 @@ def main() -> int:
                 print(f"[信息] 将检查 GitHub 包: {github_deps}")
             if pip_deps:
                 print(f"[信息] 将检查 pip 包: {pip_deps}")
+            if nuget_deps:
+                print(f"[信息] 将检查 nuget 包 (如 python): {nuget_deps}")
 
-            # 对于 --for-package，分别处理两种类型的包
-            args.packages = github_deps or None  # GitHub 包走原有 clone 逻辑
-            args.pip_packages = pip_deps  # pip 包单独处理
+            # 对于 --for-package，分别处理各类型的包
+            args.packages = github_deps or None
+            args.pip_packages = pip_deps
+            args.nuget_packages = nuget_deps
 
     # 将 --package 指定的包按类型拆分（非 --for-package 模式）
     if not args.for_package and args.packages:
@@ -476,7 +683,14 @@ def main() -> int:
         args.pip_packages = existing_pip + extra_pip
 
     # 扫描包状态（仅 GitHub 包）
-    existing, missing = check_missing_packages(source_dir, args.packages)
+    # 全量模式下只扫描 GitHub 包，pip 包不在 rez-package-source 里不应被当作缺失 GitHub 包
+    github_to_scan = args.packages if args.packages else list(_GITHUB_PACKAGES.keys())
+    existing, missing = check_missing_packages(source_dir, github_to_scan)
+
+    # 全量模式下同步收集所有 pip 包以便后续安装
+    if not args.for_package and not args.packages:
+        base_pip: List[str] = getattr(args, "pip_packages", None) or []
+        args.pip_packages = base_pip + list(_PIP_PACKAGES.keys())
 
     # --force 模式：将已存在的包也视为需要处理
     if args.force and existing:
@@ -516,7 +730,7 @@ def main() -> int:
 
                 # --force 模式下先删除已有目录
                 if args.force and pkg_dir.exists():
-                    print(f"      (--force) 删除已有目录...")
+                    print("      (--force) 删除已有目录...")
                     try:
                         shutil.rmtree(pkg_dir)
                     except Exception as e:
@@ -563,7 +777,7 @@ def main() -> int:
             print(f"\n[信息] 创建 rez-package-3rd 目录: {third_party_dir}")
             third_party_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n[检查] pip 第三方包...")
+        print("\n[检查] pip 第三方包...")
         pip_success = 0
         pip_fail = 0
 
@@ -579,6 +793,34 @@ def main() -> int:
                 pip_fail += 1
 
         print(f"\n[pip] {pip_success} 个成功, {pip_fail} 个失败")
+
+    # 处理 nuget 包（如 python）
+    nuget_packages = getattr(args, "nuget_packages", None) or []
+    if nuget_packages:
+        third_party_dir = source_dir.parent / "rez-package-3rd"
+        if not third_party_dir.exists():
+            print(f"\n[信息] 创建 rez-package-3rd 目录: {third_party_dir}")
+            third_party_dir.mkdir(parents=True, exist_ok=True)
+
+        print("\n[检查] nuget 包 (如 python)...")
+        nuget_success = 0
+        nuget_fail = 0
+
+        for pkg_name in nuget_packages:
+            meta = PACKAGE_REGISTRY[pkg_name]
+            print(f"  [{pkg_name}]")
+            ok, msg = install_nuget_package_to_3rd(pkg_name, meta, third_party_dir)
+            if ok:
+                print(f"  [\u2713] {msg}")
+                nuget_success += 1
+            else:
+                print(f"  [\u2717] {msg}")
+                nuget_fail += 1
+
+        if nuget_fail:
+            print(f"\n[nuget] {nuget_success} 个成功, {nuget_fail} 个失败")
+            return 1
+        print(f"\n[nuget] {nuget_success} 个成功")
 
     return 0
 

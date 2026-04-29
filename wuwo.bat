@@ -9,36 +9,27 @@ REM Get script directory
 set "SCRIPT_DIR=%~dp0"
 set "VENV_DIR=%SCRIPT_DIR%py_312"
 set "PYTHON_EXE=%VENV_DIR%\python.exe"
-set "REZ_EXE=%VENV_DIR%\Scripts\rez.exe"
-set "LugwitToolDir=d:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp"
+set "LugwitToolDir=%SCRIPT_DIR%..\.."
 set "WUWO_CONFIG_DIR=%SCRIPT_DIR%config"
 
 
 REM Package paths
-REM Read source / third_party paths from config.yaml via get_pkg_path.py (fallback to relative defaults)
-for /f "delims=" %%P in ('%PYTHON_EXE% "%SCRIPT_DIR%get_pkg_path.py" source 2^>nul') do set "SOURCE_PACKAGES=%%P"
-if "%SOURCE_PACKAGES%"=="" set "SOURCE_PACKAGES=%SCRIPT_DIR%..\rez-package-source"
-
-for /f "delims=" %%P in ('%PYTHON_EXE% "%SCRIPT_DIR%get_pkg_path.py" third_party 2^>nul') do set "THIRD_PARTY_PACKAGES=%%P"
-if "%THIRD_PARTY_PACKAGES%"=="" set "THIRD_PARTY_PACKAGES=%SCRIPT_DIR%..\rez-package-3rd"
-
+REM Source repo: <this>/../rez-package-source/<pkg_name>/<version>/package.py (dev, no install needed)
+set "SOURCE_PACKAGES=%SCRIPT_DIR%..\rez-package-source"
 set "LOCAL_PACKAGES=%SCRIPT_DIR%packages"
-set "BUILD_PACKAGES=d:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\rez-package-build"
-set "RELEASE_PACKAGES=d:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\rez-package-release"
+set "BUILD_PACKAGES=%SCRIPT_DIR%..\rez-package-build"
+set "RELEASE_PACKAGES=%SCRIPT_DIR%..\rez-package-release"
 
 REM Set REZ_PACKAGES_PATH
-REM Priority: source -> 3rd-party -> local -> build -> release
-REM   source    wins for self-owned packages (dev mode, source of truth)
-REM   3rd-party holds binary-only packages (pyqt5/pyside6/pywin32/pyfory etc., NOT in git)
-set "REZ_PACKAGES_PATH=%SOURCE_PACKAGES%;%THIRD_PARTY_PACKAGES%;%LOCAL_PACKAGES%;%BUILD_PACKAGES%;%RELEASE_PACKAGES%"
+REM Priority: source -> local -> build -> release (source wins for same package during dev)
+set "REZ_PACKAGES_PATH=%SOURCE_PACKAGES%;%LOCAL_PACKAGES%;%BUILD_PACKAGES%;%RELEASE_PACKAGES%"
 
 REM Set Rez configuration file
 set "REZ_CONFIG_FILE=%SCRIPT_DIR%rezconfig.py"
 
-
-REM ====== Auto-fetch packages required by l_tray (rez resolves the rest) ======
-echo [wuwo] Checking packages required by l_tray...
-"%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-package l_tray
+REM ====== Auto-fetch missing packages from GitHub ======
+echo [wuwo] Checking rez packages...
+"%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py"
 if errorlevel 1 (
     echo [wuwo] WARNING: Some packages could not be downloaded. Continuing anyway...
 )
@@ -76,16 +67,8 @@ for /f "tokens=1*" %%A in ("%_REST%") do (
         goto :eof
     )
 )
-REM Auto-fetch pip deps for "rez env ..." calls
-for /f "tokens=1*" %%A in ("%_REST%") do (
-    if /i "%%~A"=="env" (
-        echo [wuwo] Auto-fetching pip deps for: rez env %%B
-        "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "%%B"
-        if errorlevel 1 echo [wuwo] WARNING: Some pip deps could not be installed. Continuing...
-    )
-)
 REM Run native rez command with full forwarded arguments
-call "%REZ_EXE%" %_REST%
+"%PYTHON_EXE%" -m rez %_REST%
 goto :eof
 
 :start_chatroom_backend
@@ -97,7 +80,7 @@ set "CHATROOM_ENABLE_NOTEPAD=0"
 if /i "%~2"=="notepad" set "CHATROOM_ENABLE_NOTEPAD=1"
 
 REM Start backend via Rez env (port is controlled by ChatRoom backend code/bat, default 1026)
-call "%REZ_EXE%" env ChatRoom -- cmd /c "%LugwitToolDir%\rez-package-source\ChatRoom\999.0\src\ChatRoom\run_backend_server.bat"
+"%PYTHON_EXE%" -m rez env ChatRoom -- cmd /c "%LugwitToolDir%\rez-package-source\ChatRoom\999.0\src\ChatRoom\run_backend_server.bat"
 endlocal
 goto :eof
 

@@ -2,6 +2,8 @@
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
+
+
 REM ============================================================
 REM  wuwo One-Click Installer (Bootstrap)
 REM
@@ -12,8 +14,9 @@ REM           -> use current directory as wuwo dir directly
 REM
 REM  Steps:
 REM    1. Locate / clone wuwo repo
-REM    2. Download Python 3.12.10 full zip (green, no install needed)
-REM    3. Extract to wuwo\py_312\  (includes tkinter + pip)
+REM    2. Download Python 3.12.10 via nuget (full green, no install needed)
+REM       URL: https://www.nuget.org/api/v2/package/python/3.12.10
+REM    3. Extract nupkg -> py_312\  (includes tkinter + pip)
 REM    4. Hand over to wuwo\install.py for all further steps
 REM
 REM  No system Python required - fully self-contained!
@@ -35,12 +38,12 @@ if exist "%INSTALLER_DIR%install.py" (
 set "PYTHON_DIR=%WUWO_DIR%\py_312"
 set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 
-REM -- Python 3.12.10 full zip (green portable, includes tkinter + pip)
+REM -- Python 3.12.10 via nuget (full green package: includes tkinter + pip, no install needed)
 set "FULL_VER=3.12.10"
-set "ZIP_NAME=python-%FULL_VER%-amd64.zip"
-set "ZIP_URL=https://www.python.org/ftp/python/%FULL_VER%/%ZIP_NAME%"
-set "TEMP_ZIP=%WUWO_DIR%\%ZIP_NAME%"
-set "MIN_SIZE=30000000"
+set "NUGET_URL=https://www.nuget.org/api/v2/package/python/%FULL_VER%"
+set "NUPKG_FILE=%WUWO_DIR%\python.%FULL_VER%.zip"
+set "NUPKG_EXTRACT=%WUWO_DIR%\.nupkg_tmp"
+set "MIN_SIZE=10000000"
 
 echo ============================================================
 echo   wuwo Bootstrap Installer
@@ -92,59 +95,79 @@ if exist "%PYTHON_EXE%" (
     rmdir /s /q "%PYTHON_DIR%" 2>nul
 )
 
-echo [2/3] Downloading Python %FULL_VER% portable zip...
-echo       ^(full zip: includes tkinter + pip, ~32 MB, no system install^)
+echo [2/3] Downloading Python %FULL_VER% (nuget full green package, includes tkinter + pip)...
+echo       URL: %NUGET_URL%
 echo.
 
-REM -- 2a: Download zip --
-if exist "%TEMP_ZIP%" (
+REM -- 2a: Download nupkg  --
+if exist "%NUPKG_FILE%" (
     set "SZ=0"
-    for %%F in ("%TEMP_ZIP%") do set "SZ=%%~zF"
+    for %%F in ("%NUPKG_FILE%") do set "SZ=%%~zF"
     if !SZ! LSS %MIN_SIZE% (
-        echo [INFO] Existing zip too small ^(!SZ! bytes^), re-downloading...
-        del /f /q "%TEMP_ZIP%"
+        echo [INFO] Existing nupkg too small ^(!SZ! bytes^), re-downloading...
+        del /f /q "%NUPKG_FILE%"
     ) else (
-        echo [INFO] Reusing existing zip ^(!SZ! bytes^).
+        echo [INFO] Reusing existing nupkg ^(!SZ! bytes^).
         goto :extract_python
     )
 )
 
-echo       Downloading from: %ZIP_URL%
-curl --ssl-no-revoke -L -o "%TEMP_ZIP%" "%ZIP_URL%" --progress-bar
+curl --ssl-no-revoke -L -o "%NUPKG_FILE%" "%NUGET_URL%" --progress-bar
 if !errorlevel! neq 0 (
     echo [ERROR] Download failed! Check network connection.
-    if exist "%TEMP_ZIP%" del /f /q "%TEMP_ZIP%"
+    if exist "%NUPKG_FILE%" del /f /q "%NUPKG_FILE%"
     goto :fail
 )
 
 REM -- Validate size --
 set "SZ=0"
-for %%F in ("%TEMP_ZIP%") do set "SZ=%%~zF"
+for %%F in ("%NUPKG_FILE%") do set "SZ=%%~zF"
 if !SZ! LSS %MIN_SIZE% (
-    echo [ERROR] Zip too small ^(!SZ! bytes^). Possibly corrupted.
-    del /f /q "%TEMP_ZIP%"
+    echo [ERROR] nupkg too small ^(!SZ! bytes^). Possibly corrupted.
+    del /f /q "%NUPKG_FILE%"
     goto :fail
 )
 echo [OK] Downloaded: !SZ! bytes.
 echo.
 
 :extract_python
-REM -- 2b: Extract --
+REM -- 2b: Extract nupkg (it is a zip), Python files are in tools\ subdirectory --
 echo [3/3 bootstrap] Extracting Python %FULL_VER% to py_312...
 if exist "%PYTHON_DIR%" rmdir /s /q "%PYTHON_DIR%"
-mkdir "%PYTHON_DIR%"
-powershell -NoProfile -Command "Expand-Archive -Path '%TEMP_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
+if exist "%NUPKG_EXTRACT%" rmdir /s /q "%NUPKG_EXTRACT%"
+mkdir "%NUPKG_EXTRACT%"
+powershell -NoProfile -Command "Expand-Archive -Path '%NUPKG_FILE%' -DestinationPath '%NUPKG_EXTRACT%' -Force"
 if !errorlevel! neq 0 (
     echo [ERROR] Extraction failed!
     goto :fail
 )
+REM nuget Python package structure: tools\ is the full Python directory; also handle case where python.exe is at root
+if exist "%NUPKG_EXTRACT%\tools\python.exe" (
+    move "%NUPKG_EXTRACT%\tools" "%PYTHON_DIR%"
+) else if exist "%NUPKG_EXTRACT%\python.exe" (
+    mkdir "%PYTHON_DIR%"
+    robocopy "%NUPKG_EXTRACT%" "%PYTHON_DIR%" /E /NFL /NDL /NJH /NJS >nul
+) else (
+    echo [ERROR] nuget package structure invalid: tools\python.exe not found!
+    echo         Extracted contents:
+    dir "%NUPKG_EXTRACT%" /b
+    goto :fail
+)
+if exist "%NUPKG_EXTRACT%" rmdir /s /q "%NUPKG_EXTRACT%" 2>nul
+
 if not exist "%PYTHON_EXE%" (
     echo [ERROR] python.exe not found after extraction!
     goto :fail
 )
 
-REM -- Cleanup zip --
-del /f /q "%TEMP_ZIP%" 2>nul
+REM -- Cleanup nupkg --
+del /f /q "%NUPKG_FILE%" 2>nul
+
+REM -- 2c: 检查 tkinter 所需的 Tcl/Tk DLL --
+if not exist "%PYTHON_DIR%\tcl86t.dll" (
+    echo [WARN] tcl86t.dll not found - tkinter unavailable.
+    echo        install.py will use command-line mode. l_tray uses PySide6, not tkinter.
+)
 echo [OK] Python %FULL_VER% ready at: %PYTHON_DIR%
 echo.
 
@@ -184,7 +207,7 @@ echo ============================================================
 echo.
 REM -- Start tray via wuwo.bat (runs rez env l_tray -- start_tray)
 if exist "%WUWO_DIR%\wuwo.bat" (
-    start "wuwo tray" cmd /k "\"%WUWO_DIR%\wuwo.bat\" rez env l_tray -- start_tray"
+    start "wuwo tray" /d "%WUWO_DIR%" cmd /k "wuwo.bat rez env l_tray -- start_tray"
 ) else (
     echo [WARN] wuwo.bat not found, skipping auto-start.
     echo        Run manually: %WUWO_DIR%\wuwo.bat
