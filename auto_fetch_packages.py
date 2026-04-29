@@ -5,9 +5,10 @@ auto_fetch_packages.py
 自动检测并从 GitHub 下载缺失的 rez 包到 rez-package-source 目录
 
 用法:
-    python auto_fetch_packages.py                    # 自动检查并下载
-    python auto_fetch_packages.py --check-only       # 仅检查，不下载
-    python auto_fetch_packages.py --package l_tray   # 仅处理指定包
+    python auto_fetch_packages.py                       # 检查并下载全部注册包
+    python auto_fetch_packages.py --check-only          # 仅检查，不下载
+    python auto_fetch_packages.py --package l_tray      # 仅处理指定包
+    python auto_fetch_packages.py --for-package l_tray  # 读取 l_tray requires，只下载其依赖中注册的缺失包
 """
 
 import argparse
@@ -35,11 +36,11 @@ PACKAGE_REGISTRY: Dict[str, dict] = {
     "lugwit_auth": {"repo": "lugwit_auth", "init_bat": None},
     "postgresql": {"repo": "postgresql", "init_bat": "999.0/init.bat"},
     "pyfory": {"repo": "pyfory", "init_bat": None},
-    "pyqt5": {"repo": "pyqt5", "init_bat": None},
-    "pyside6": {"repo": "pyside6", "init_bat": None},
-    "python": {"repo": "python", "init_bat": "init.bat"},
+    "pyqt5": {"pip_name": "PyQt5==5.15.11", "python_ver": "3.12"},  # pip 包
+    "pyside6": {"pip_name": "PySide6==6.7.0", "python_ver": "3.12"},  # pip 包
     "pytracemp": {"repo": "pytracemp", "init_bat": None},
-    "pywin32": {"repo": "pywin32", "init_bat": None},
+    "pywin32": {"pip_name": "pywin32", "python_ver": "3.12"},  # pip 包
+    "psutil": {"pip_name": "psutil", "python_ver": "3.12"},  # pip 包
     "start_multi_app": {"repo": "start_multi_app", "init_bat": None},
     "view_pkl_tool": {"repo": "view_pkl_tool", "init_bat": None},
 }
@@ -202,6 +203,99 @@ def print_status_table(existing: List[str], missing: List[str]) -> None:
     print()
 
 
+def get_requires_for_package(pkg_name: str, source_dir: Path) -> List[str]:
+    """从 rez-package-source/<pkg_name>/*/package.py 读取 requires 列表。
+
+    返回包名列表（去除版本约束，如 'python-3.12+<3.13' 取 'python'）。
+    """
+    import re
+    pkg_files = list((source_dir / pkg_name).glob("*/package.py"))
+    if not pkg_files:
+        print(f"[WARN] {pkg_name}/package.py 未找到，无法读取 requires", file=sys.stderr)
+        return []
+    content = pkg_files[0].read_text(encoding="utf-8")
+    m = re.search(r'requires\s*=\s*\[([^\]]+)\]', content, re.S)
+    if not m:
+        return []
+    raw = m.group(1)
+    # 提取包名（去除 -version 约束，只保留名称部分）
+    names = re.findall(r'["\']([\w]+)', raw)
+    return names
+
+
+def check_python_executable() -> Optional[Path]:
+    """查找当前 Python 可执行文件路径。"""
+    try:
+        import sys
+        return Path(sys.executable)
+    except Exception:
+        return None
+
+
+def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path) -> Tuple[bool, str]:
+    """通过 pip install 安装第三方包到 rez-package-3rd 目录。
+
+    Args:
+        pkg_name: 包名
+        meta: 包元数据（包含 pip_name、python_ver 等）
+        third_party_dir: rez-package-3rd 目录
+
+    Returns:
+        (success, message)
+    """
+    pip_name = meta.get("pip_name", pkg_name)
+    python_ver = meta.get("python_ver", "3.12")
+    rez_ver = meta.get("rez_ver", f"999.0-py{python_ver}")
+
+    pkg_dir = third_party_dir / pkg_name / rez_ver
+    hidden_dir = pkg_dir / f".{pkg_name}"
+
+    # 已存在则跳过
+    if (pkg_dir / "package.py").exists():
+        return True, f"已存在: {pkg_dir}"
+
+    # pip install
+    python_exe = check_python_executable()
+    if not python_exe:
+        return False, "找不到 Python 可执行文件"
+
+    print(f"      pip install {pip_name} → {hidden_dir}")
+    try:
+        result = subprocess.run(
+            [str(python_exe), "-m", "pip", "install", pip_name,
+             "--target", str(hidden_dir),
+             "--no-warn-script-location", "--quiet"],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            return False, f"pip install 失败: {result.stderr.strip()}"
+    except subprocess.TimeoutExpired:
+        return False, "pip install 超时（120s）"
+    except Exception as e:
+        return False, f"pip install 异常: {e}"
+
+    # 生成 rez package.py
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    package_py = pkg_dir / "package.py"
+    next_ver = f"{python_ver.rsplit('.', 1)[0]}.{int(python_ver.rsplit('.', 1)[-1]) + 1}"
+    package_py.write_text(
+        f'# -*- coding: utf-8 -*-\n'
+        f'name = "{pkg_name}"\n'
+        f'version = "{rez_ver}"\n'
+        f'description = "{meta.get("description", pkg_name)}"\n'
+        f'requires = ["python-{python_ver}+<{next_ver}"]\n'
+        f'build_command = False\n'
+        f'cachable = True\n'
+        f'relocatable = True\n'
+        f'\n'
+        f'def commands():\n'
+        f'    env.PYTHONPATH.append("{{root}}/.{pkg_name}")\n',
+        encoding="utf-8"
+    )
+
+    return True, f"安装完成: {pkg_dir}"
+
+
 def main() -> int:
     """主入口。"""
     parser = argparse.ArgumentParser(
@@ -234,16 +328,13 @@ def main() -> int:
         metavar="DIR",
         help="手动指定 rez-package-source 路径",
     )
+    parser.add_argument(
+        "--for-package",
+        metavar="NAME",
+        help="读取该包的 requires，只下载其依赖中在 REGISTRY 里注册的缺失包",
+    )
 
     args = parser.parse_args()
-
-    # 验证指定的包名
-    if args.packages:
-        unknown = [p for p in args.packages if p not in PACKAGE_REGISTRY]
-        if unknown:
-            print(f"[错误] 未知的包名: {', '.join(unknown)}", file=sys.stderr)
-            print(f"       可用的包: {', '.join(sorted(PACKAGE_REGISTRY.keys()))}", file=sys.stderr)
-            return 1
 
     # 确定 rez-package-source 路径
     source_dir = find_rez_package_source(args.source_dir)
@@ -252,6 +343,28 @@ def main() -> int:
         source_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[信息] rez-package-source: {source_dir}")
+
+    # --for-package 模式：读取目标包 requires，只处理其在 REGISTRY 中的依赖
+    if args.for_package:
+        requires = get_requires_for_package(args.for_package, source_dir)
+        if not requires:
+            print(f"[警告] 无法读取 {args.for_package} 的 requires，回退到全量模式", file=sys.stderr)
+        else:
+            # 区分 GitHub 包和 pip 包
+            github_deps = [r for r in requires if r in PACKAGE_REGISTRY and "repo" in PACKAGE_REGISTRY[r]]
+            pip_deps = [r for r in requires if r in PACKAGE_REGISTRY and "pip_name" in PACKAGE_REGISTRY[r]]
+            not_in_registry = [r for r in requires if r not in PACKAGE_REGISTRY]
+            
+            if not_in_registry:
+                print(f"[信息] 以下依赖不在下载注册表中（略过）: {not_in_registry}")
+            if github_deps:
+                print(f"[信息] 将检查 GitHub 包: {github_deps}")
+            if pip_deps:
+                print(f"[信息] 将检查 pip 包: {pip_deps}")
+            
+            # 对于 --for-package，我们分别处理两种类型的包
+            args.packages = github_deps or None  # GitHub 包走原有 clone 逻辑
+            args.pip_packages = pip_deps  # pip 包单独处理
 
     # 扫描包状态
     existing, missing = check_missing_packages(source_dir, args.packages)
@@ -266,75 +379,99 @@ def main() -> int:
     print_status_table(existing, missing)
 
     if not missing:
-        print("[完成] 所有包已就绪，无需下载")
-        return 0
-
-    if args.check_only:
-        print(f"[信息] 共 {len(missing)} 个包缺失（--check-only 模式，不下载）")
-        return 0
-
-    # 检查 git
-    if not _check_git_available():
-        print("[错误] git 命令不可用，请确保 git 已安装并在 PATH 中", file=sys.stderr)
-        return 1
-
-    # 下载缺失包
-    print(f"[下载] 开始下载 {len(missing)} 个缺失包...\n")
-
-    success_count = 0
-    fail_count = 0
-    init_fail_count = 0
-
-    for idx, pkg_name in enumerate(missing, 1):
-        info = PACKAGE_REGISTRY[pkg_name]
-        repo_name = info["repo"]
-        init_bat = info["init_bat"]
-        pkg_dir = source_dir / pkg_name
-
-        print(f"[{idx}/{len(missing)}] 正在克隆 {pkg_name} ...")
-        print(f"      git clone --depth 1 https://github.com/{GITHUB_OWNER}/{repo_name}.git")
-
-        # --force 模式下先删除已有目录
-        if args.force and pkg_dir.exists():
-            print(f"      (--force) 删除已有目录...")
-            try:
-                shutil.rmtree(pkg_dir)
-            except Exception as e:
-                print(f"      [错误] 删除失败: {e}")
-                fail_count += 1
-                continue
-
-        ok, msg = clone_package(pkg_name, repo_name, source_dir)
-
-        if not ok:
-            print(f"      [错误] {msg}")
-            fail_count += 1
-            continue
-
-        print(f"      {msg}")
-        success_count += 1
-
-        # 运行 init.bat
-        if init_bat and not args.skip_init:
-            print(f"      运行初始化脚本: {init_bat}")
-            init_ok, init_msg = run_init_script(pkg_dir, init_bat)
-            if not init_ok:
-                print(f"      [警告] {init_msg}")
-                init_fail_count += 1
-            else:
-                print(f"      {init_msg}")
-
-    # 汇总
-    print()
-    if fail_count == 0:
-        print(f"[完成] 全部 {success_count} 个包下载成功")
+        print("[完成] 所有 GitHub 包已就绪，无需下载")
     else:
-        print(f"[完成] {success_count} 个成功, {fail_count} 个失败")
+        if args.check_only:
+            print(f"[信息] 共 {len(missing)} 个 GitHub 包缺失（--check-only 模式，不下载）")
+        else:
+            # 检查 git
+            if not _check_git_available():
+                print("[错误] git 命令不可用，请确保 git 已安装并在 PATH 中", file=sys.stderr)
+                return 1
 
-    if init_fail_count > 0:
-        print(f"[警告] {init_fail_count} 个 init 脚本执行失败（不影响包可用性）")
+            # 下载缺失包
+            print(f"\n[下载] 开始下载 {len(missing)} 个缺失 GitHub 包...\n")
 
-    return 1 if fail_count > 0 else 0
+            success_count = 0
+            fail_count = 0
+            init_fail_count = 0
+
+            for idx, pkg_name in enumerate(missing, 1):
+                info = PACKAGE_REGISTRY[pkg_name]
+                repo_name = info["repo"]
+                init_bat = info["init_bat"]
+                pkg_dir = source_dir / pkg_name
+
+                print(f"[{idx}/{len(missing)}] 正在克隆 {pkg_name} ...")
+                print(f"      git clone --depth 1 https://github.com/{GITHUB_OWNER}/{repo_name}.git")
+
+                # --force 模式下先删除已有目录
+                if args.force and pkg_dir.exists():
+                    print(f"      (--force) 删除已有目录...")
+                    try:
+                        shutil.rmtree(pkg_dir)
+                    except Exception as e:
+                        print(f"      [错误] 删除失败: {e}")
+                        fail_count += 1
+                        continue
+
+                ok, msg = clone_package(pkg_name, repo_name, source_dir)
+
+                if not ok:
+                    print(f"      [错误] {msg}")
+                    fail_count += 1
+                    continue
+
+                print(f"      {msg}")
+                success_count += 1
+
+                # 运行 init.bat
+                if init_bat and not args.skip_init:
+                    print(f"      运行初始化脚本: {init_bat}")
+                    init_ok, init_msg = run_init_script(pkg_dir, init_bat)
+                    if not init_ok:
+                        print(f"      [警告] {init_msg}")
+                        init_fail_count += 1
+                    else:
+                        print(f"      {init_msg}")
+
+            # 汇总
+            print()
+            if fail_count == 0:
+                print(f"[完成] 全部 {success_count} 个 GitHub 包下载成功")
+            else:
+                print(f"[完成] {success_count} 个成功, {fail_count} 个失败")
+
+            if init_fail_count > 0:
+                print(f"[警告] {init_fail_count} 个 init 脚本执行失败（不影响包可用性）")
+
+    # 处理 pip 包（--for-package 模式下）
+    pip_packages = getattr(args, 'pip_packages', None) or []
+    if pip_packages:
+        # 计算 third_party_dir
+        third_party_dir = source_dir.parent / "rez-package-3rd"
+        if not third_party_dir.exists():
+            print(f"\n[信息] 创建 rez-package-3rd 目录: {third_party_dir}")
+            third_party_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n[检查] pip 第三方包...")
+        pip_success = 0
+        pip_fail = 0
+
+        for pkg_name in pip_packages:
+            meta = PACKAGE_REGISTRY[pkg_name]
+            print(f"  [{pkg_name}]")
+            ok, msg = install_pip_package_to_3rd(pkg_name, meta, third_party_dir)
+            if ok:
+                print(f"  [✓] {msg}")
+                pip_success += 1
+            else:
+                print(f"  [✗] {msg}")
+                pip_fail += 1
+
+        print(f"\n[pip] {pip_success} 个成功, {pip_fail} 个失败")
+
+    return 0
 
 
 if __name__ == "__main__":

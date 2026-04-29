@@ -1,0 +1,72 @@
+# ============================================================
+#  wuwo Third-Party Package Registry
+# ============================================================
+#
+#  第三方包元数据配置，由 install.py 读取并自动安装到
+#  <trayapp>/rez-package-3rd/ 目录（不纳入 git 管理）。
+#
+#  字段说明:
+#    type        : 安装方式，pip | github
+#    pip_name    : pip 包名（type=pip 时必填）
+#    python_ver  : 目标 Python 版本，如 "3.12"
+#    repo        : GitHub 仓库 owner/name（type=github 时必填）
+#    init_bat    : clone 后运行的初始化脚本路径（相对于包目录）
+#    rez_ver     : rez 包版本号（默认 999.0-py<python_ver>）
+#    description : 可读说明
+# ============================================================
+
+packages:
+
+  # ---- Python 运行时 ----------------------------------------
+  python:
+    type: github
+    repo: Lugwit123/python
+    init_bat: init.bat
+    rez_ver: "3.12"
+    description: "Python 3.12 rez wrapper (green portable)"
+
+  # ---- Qt 绑定 -----------------------------------------------
+  pyqt5:
+    type: pip
+    pip_name: PyQt5
+    python_ver: "3.11"
+    rez_ver: "999.0-py3.11"
+    description: "PyQt5 Qt bindings for Python 3.11"
+
+  pyside6:
+    type: pip
+    pip_name: PySide6
+    python_ver: "3.12"
+    rez_ver: "999.0-py3.12"
+    description: "PySide6 Qt bindings for Python 3.12"
+
+  # ---- Windows 扩展 -----------------------------------------
+  pywin32:
+    type: pip
+    pip_name: pywin32
+    python_ver: "3.12"
+    rez_ver: "999.0-py3.12"
+    description: "Python for Windows Extensions"
+
+  # ---- 系统监控 ---------------------------------------------
+  psutil:
+    type: pip
+    pip_name: psutil
+    python_ver: "3.12"
+    rez_ver: "999.0-py3.12"
+    description: "Cross-platform system/process utilities"
+
+  # ---- 序列化 -----------------------------------------------
+  pyfory:
+    type: pip
+    pip_name: pyfory
+    python_ver: "3.12"
+    rez_ver: "999.0-py3.12"
+    description: "PyFury (Apache Fury) fast serialization"
+
+  # ---- 性能追踪 ---------------------------------------------
+  pytracemp:
+    type: github
+    repo: Lugwit123/pytracemp
+    rez_ver: "999.0"
+    description: "Python trace/profiling tools"

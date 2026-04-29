@@ -15,22 +15,30 @@ set "WUWO_CONFIG_DIR=%SCRIPT_DIR%config"
 
 
 REM Package paths
-REM Source repo: <this>/../rez-package-source/<pkg_name>/<version>/package.py (dev, no install needed)
-set "SOURCE_PACKAGES=%SCRIPT_DIR%..\rez-package-source"
+REM Read source / third_party paths from config.yaml via get_pkg_path.py (fallback to relative defaults)
+for /f "delims=" %%P in ('%PYTHON_EXE% "%SCRIPT_DIR%get_pkg_path.py" source 2^>nul') do set "SOURCE_PACKAGES=%%P"
+if "%SOURCE_PACKAGES%"=="" set "SOURCE_PACKAGES=%SCRIPT_DIR%..\rez-package-source"
+
+for /f "delims=" %%P in ('%PYTHON_EXE% "%SCRIPT_DIR%get_pkg_path.py" third_party 2^>nul') do set "THIRD_PARTY_PACKAGES=%%P"
+if "%THIRD_PARTY_PACKAGES%"=="" set "THIRD_PARTY_PACKAGES=%SCRIPT_DIR%..\rez-package-3rd"
+
 set "LOCAL_PACKAGES=%SCRIPT_DIR%packages"
 set "BUILD_PACKAGES=d:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\rez-package-build"
 set "RELEASE_PACKAGES=d:\TD_Depot\Software\Lugwit_syncPlug\lugwit_insapp\trayapp\rez-package-release"
 
 REM Set REZ_PACKAGES_PATH
-REM Priority: source -> local -> build -> release (source wins for same package during dev)
-set "REZ_PACKAGES_PATH=%SOURCE_PACKAGES%;%LOCAL_PACKAGES%;%BUILD_PACKAGES%;%RELEASE_PACKAGES%"
+REM Priority: source -> 3rd-party -> local -> build -> release
+REM   source    wins for self-owned packages (dev mode, source of truth)
+REM   3rd-party holds binary-only packages (pyqt5/pyside6/pywin32/pyfory etc., NOT in git)
+set "REZ_PACKAGES_PATH=%SOURCE_PACKAGES%;%THIRD_PARTY_PACKAGES%;%LOCAL_PACKAGES%;%BUILD_PACKAGES%;%RELEASE_PACKAGES%"
 
 REM Set Rez configuration file
 set "REZ_CONFIG_FILE=%SCRIPT_DIR%rezconfig.py"
 
-REM ====== Auto-fetch missing packages from GitHub ======
-echo [wuwo] Checking rez packages...
-"%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py"
+
+REM ====== Auto-fetch packages required by l_tray (rez resolves the rest) ======
+echo [wuwo] Checking packages required by l_tray...
+"%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-package l_tray
 if errorlevel 1 (
     echo [wuwo] WARNING: Some packages could not be downloaded. Continuing anyway...
 )

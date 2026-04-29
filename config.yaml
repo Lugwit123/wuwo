@@ -6,12 +6,19 @@
 packages:
   # Local packages directory (highest priority)
   local: "packages"
-  
+
+  # Source packages directory (self-owned, git-managed)
+  # Default: <wuwo>/../rez-package-source
+  source: ""
+
+  # Third-party binary packages (NOT in git, auto-installed by install.py)
+  third_party: "D:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/rez-package-3rd"
+
   # Build packages directory (development builds)
   build: "d:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/rez-package-build"
   
   # Release packages directory (stable releases)
-  release: "d:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/Lib/rez-packages-release"
+  release: "d:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/rez-package-release"
 
 # Python Environment
 # ------------------

@@ -177,5 +177,17 @@ pause
 exit /b 1
 
 :end
+echo.
+echo ============================================================
+echo   Installation complete! Launching tray...
+echo ============================================================
+echo.
+REM -- Start tray via wuwo.bat (runs rez env l_tray -- start_tray)
+if exist "%WUWO_DIR%\wuwo.bat" (
+    start "wuwo tray" cmd /k "\"%WUWO_DIR%\wuwo.bat\" rez env l_tray -- start_tray"
+) else (
+    echo [WARN] wuwo.bat not found, skipping auto-start.
+    echo        Run manually: %WUWO_DIR%\wuwo.bat
+)
 endlocal
 pause

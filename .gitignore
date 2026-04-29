@@ -26,3 +26,12 @@ Thumbs.db
 logs/
 *.log
 *.pyc
+*.pyo
+*.pyd
+*.exe
+*.dll
+*.zip
+*.7z
+*.whl
+*.egg-info/
+.venv/

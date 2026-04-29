@@ -243,6 +243,33 @@ def _update_config_yaml(config_yaml: Path, build_path: Path, release_path: Path)
     ok(f"  packages.release = {release_str}")
 
 
+def read_config_paths(wuwo_dir: Path) -> dict:
+    """从 config.yaml 读取各路径配置，空值时返回相对于 wuwo_dir.parent 的默认路径。"""
+    config_yaml = wuwo_dir / "config.yaml"
+    parent = wuwo_dir.parent
+    defaults = {
+        "source":      parent / "rez-package-source",
+        "third_party": parent / "rez-package-3rd",
+        "build":       parent / "rez-package-build",
+        "release":     parent / "rez-package-release",
+        "local":       wuwo_dir / "packages",
+    }
+    if not config_yaml.exists():
+        return defaults
+    try:
+        import yaml
+        cfg = yaml.safe_load(config_yaml.read_text(encoding="utf-8")) or {}
+        pkgs = cfg.get("packages", {})
+        result = {}
+        for key, default in defaults.items():
+            val = pkgs.get(key, "")
+            result[key] = Path(val).resolve() if val else default
+        return result
+    except Exception as e:
+        warn(f"读取 config.yaml 失败: {e}，使用默认路径。")
+        return defaults
+
+
 def configure_rez_paths(wuwo_dir: Path) -> None:
     """询问用户是否使用默认 rez 包路径并更新 config.yaml。"""
     config_yaml = wuwo_dir / "config.yaml"
@@ -252,7 +279,7 @@ def configure_rez_paths(wuwo_dir: Path) -> None:
 
     parent = wuwo_dir.parent
     default_build   = parent / "rez-package-build"
-    default_release = parent / "rez-packages-release"
+    default_release = parent / "rez-package-release"
 
     print(f"\n  推荐默认路径:")
     print(f"    packages.build   = {default_build}")
@@ -268,23 +295,166 @@ def configure_rez_paths(wuwo_dir: Path) -> None:
 
 
 # ─────────────────────────────────────────────
-#  Step 5: 拉取 rez 包
+#  Step 5: 拉取 l_tray rez 包
 # ─────────────────────────────────────────────
 
-def fetch_rez_packages(python_exe: Path, wuwo_dir: Path) -> None:
-    """调用 auto_fetch_packages.py 下载所有 rez 包。"""
-    script = wuwo_dir / "auto_fetch_packages.py"
-    if not script.exists():
-        warn("auto_fetch_packages.py 不存在，跳过包拉取。")
+def fetch_ltray_package(rez_source_dir: Path) -> None:
+    """仅 clone l_tray 到 rez-package-source，rez 会自动解析依赖。"""
+    import subprocess
+    pkg_dir = rez_source_dir / "l_tray"
+    if pkg_dir.exists():
+        # 已存在则 pull 最新
+        info(f"l_tray 已存在，尝试 git pull ...")
+        result = subprocess.run(
+            ["git", "-C", str(pkg_dir), "pull", "--ff-only"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            ok("l_tray git pull 完成。")
+        else:
+            warn(f"git pull 失败（可能有本地改动），继续使用现有版本。")
         return
 
-    info("开始从 GitHub 拉取 rez 包 ...")
-    ret = subprocess.run([str(python_exe), str(script)]).returncode
+    url = "https://github.com/Lugwit123/l_tray.git"
+    info(f"克隆 l_tray → {pkg_dir}")
+    info(f"  {url}")
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", url, str(pkg_dir)],
+        timeout=300
+    )
+    if result.returncode != 0:
+        raise RuntimeError("git clone l_tray 失败，请检查网络或 GitHub 访问权限。")
+    # 设置长路径支持
+    subprocess.run(
+        ["git", "config", "core.longpaths", "true"],
+        cwd=str(pkg_dir), capture_output=True
+    )
+    ok(f"l_tray 克隆完成: {pkg_dir}")
+
+
+# ─────────────────────────────────────────────
+#  Step 6: 按需安装第三方包到 rez-package-3rd
+# ─────────────────────────────────────────────
+
+def _parse_ltray_requires(rez_source_dir: Path) -> list[str]:
+    """从 l_tray/package.py 读取 requires 列表，返回包名列表（去除版本约束）。"""
+    import re
+    pkg_files = list((rez_source_dir / "l_tray").glob("*/package.py"))
+    if not pkg_files:
+        warn("l_tray/package.py 未找到，跳过第三方包安装。")
+        return []
+    content = pkg_files[0].read_text(encoding="utf-8")
+    # 提取 requires = [...] 列表
+    m = re.search(r'requires\s*=\s*\[([^\]]+)\]', content, re.S)
+    if not m:
+        return []
+    raw = m.group(1)
+    # 提取各字符串内容，取包名部分（去除 -3.12+<3.13 等版本约束）
+    names = re.findall(r'["\']([\w]+)', raw)
+    return [n.lower() for n in names]
+
+
+def install_third_party_packages(python_exe: Path, wuwo_dir: Path, rez_source_dir: Path, rez_3rd_dir: Path) -> None:
+    """读取 third_party_packages.yaml，对照 l_tray requires，按需安装到 rez-package-3rd。"""
+    yaml_file = wuwo_dir / "third_party_packages.yaml"
+    if not yaml_file.exists():
+        warn("third_party_packages.yaml 不存在，跳过第三方包安装。")
+        return
+
+    try:
+        import yaml
+        registry = yaml.safe_load(yaml_file.read_text(encoding="utf-8")).get("packages", {})
+    except ImportError:
+        warn("PyYAML 未安装，跳过第三方包安装。可手动运行: pip install PyYAML")
+        return
+
+    # 获取 l_tray 的实际需求列表
+    ltray_requires = _parse_ltray_requires(rez_source_dir)
+    info(f"l_tray requires: {ltray_requires}")
+
+    # 对照：只安装 requires 里有的第三方包
+    to_install = {
+        name: meta for name, meta in registry.items()
+        if name.lower() in ltray_requires
+    }
+
+    if not to_install:
+        info("无需要安装的第三方包。")
+        return
+
+    info(f"将安装 {len(to_install)} 个第三方包: {list(to_install.keys())}")
+
+    for pkg_name, meta in to_install.items():
+        rez_ver = meta.get("rez_ver", "999.0")
+        pkg_dir = rez_3rd_dir / pkg_name / rez_ver
+
+        if (pkg_dir / "package.py").exists():
+            info(f"[skip] {pkg_name} 已存在: {pkg_dir}")
+            continue
+
+        info(f"安装 {pkg_name} ({meta.get('description', '')}) ...")
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        pkg_type = meta.get("type", "pip")
+
+        if pkg_type == "pip":
+            _install_pip_package(python_exe, pkg_name, meta, pkg_dir)
+        elif pkg_type == "github":
+            _install_github_package(pkg_name, meta, pkg_dir)
+        else:
+            warn(f"  未知安装类型: {pkg_type}，跳过。")
+
+
+def _install_pip_package(python_exe: Path, pkg_name: str, meta: dict, pkg_dir: Path) -> None:
+    """pip install 安装到 pkg_dir/.{pkg_name}/ 并生成 package.py。"""
+    pip_name = meta.get("pip_name", pkg_name)
+    python_ver = meta.get("python_ver", "3.12")
+    rez_ver = meta.get("rez_ver", "999.0")
+    hidden_dir = pkg_dir / f".{pkg_name}"
+
+    ret = run_pip(python_exe, "install", pip_name,
+                  "--target", str(hidden_dir),
+                  "--no-warn-script-location",
+                  "--quiet")
     if ret != 0:
-        warn("部分 rez 包下载失败，可稍后手动运行:")
-        warn(f"  {python_exe} {script}")
-    else:
-        ok("所有 rez 包拉取完成。")
+        warn(f"  {pkg_name} pip install 失败，可手动安装: pip install {pip_name}")
+        return
+
+    # 生成 rez package.py
+    package_py = pkg_dir / "package.py"
+    package_py.write_text(
+        f'# -*- coding: utf-8 -*-\n'
+        f'name = "{pkg_name}"\n'
+        f'version = "{rez_ver}"\n'
+        f'description = "{meta.get("description", pkg_name)}"\n'
+        f'requires = ["python-{python_ver}+<{python_ver.rsplit(".", 1)[0] + "." + str(int(python_ver.rsplit(".", 1)[-1]) + 1) if "." in python_ver else python_ver}"]\n'
+        f'build_command = False\n'
+        f'cachable = True\n'
+        f'relocatable = True\n'
+        f'\n'
+        f'def commands():\n'
+        f'    env.PYTHONPATH.prepend("{{root}}/.{pkg_name}")\n',
+        encoding="utf-8"
+    )
+    ok(f"  {pkg_name} 安装完成: {pkg_dir}")
+
+
+def _install_github_package(pkg_name: str, meta: dict, pkg_dir: Path) -> None:
+    """git clone 到 pkg_dir 并运行 init_bat。"""
+    repo = meta.get("repo", f"Lugwit123/{pkg_name}")
+    url = f"https://github.com/{repo}.git"
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", url, str(pkg_dir)],
+        timeout=300
+    )
+    if result.returncode != 0:
+        warn(f"  git clone {repo} 失败。")
+        return
+    init_bat = meta.get("init_bat")
+    if init_bat:
+        init_path = pkg_dir / init_bat
+        if init_path.exists():
+            subprocess.run(["cmd", "/c", str(init_path)], cwd=str(init_path.parent))
+    ok(f"  {pkg_name} clone 完成: {pkg_dir}")
 
 
 # ─────────────────────────────────────────────
@@ -358,21 +528,25 @@ def main() -> int:
         step(4, TOTAL_STEPS, "配置 rez 包路径 (config.yaml)")
         configure_rez_paths(wuwo_dir)
 
-    # ── Step 5: 拉取 rez 包 ──
+    # ── Step 5: 拉取 l_tray 包 ──
     if args.skip_packages:
         info("--skip-packages: 跳过 rez 包拉取。")
     else:
-        step(5, TOTAL_STEPS, "拉取 rez 包（l_tray / ChatRoom / ...）")
-        # 自动创建 rez-package-source 和 rez-package-release 目录
-        rez_source  = wuwo_dir.parent / "rez-package-source"
-        rez_release = wuwo_dir.parent / "rez-package-release"
-        for d in (rez_source, rez_release):
+        step(5, TOTAL_STEPS, "拉取 l_tray 包（其余依赖由 wuwo.bat 启动时自动补全）")
+        # 从 config.yaml 读取路径（空值时用默认）
+        cfg_paths   = read_config_paths(wuwo_dir)
+        rez_source  = cfg_paths["source"]
+        rez_3rd     = cfg_paths["third_party"]
+        rez_release = cfg_paths["release"]
+        for d in (rez_source, rez_3rd, rez_release):
             if not d.exists():
                 d.mkdir(parents=True, exist_ok=True)
                 ok(f"创建目录: {d}")
             else:
                 info(f"目录已存在: {d}")
-        fetch_rez_packages(python_exe, wuwo_dir)
+        fetch_ltray_package(rez_source)
+        # 注意：其余依赖包（lperforce/L_Tools/pyqt5/pywin32 等）
+        # 由 wuwo.bat 在开启时通过 auto_fetch_packages.py --for-package l_tray 自动补全
 
     print("\n" + "=" * 60)
     print("  安装完成！")
@@ -381,9 +555,17 @@ def main() -> int:
     print(f"  wuwo   : {wuwo_dir}")
     print(f"  配置   : {wuwo_dir / 'config.yaml'}")
     print()
-    print("  启动 wuwo 环境请运行:")
+    print("  启动托盘请运行:")
+    print(f"    {wuwo_dir / 'wuwo.bat'} rez env l_tray -- python {{root}}/src/l_tray/plugSync.py")
+    print("  或直接双击:")
     print(f"    {wuwo_dir / 'wuwo.bat'}")
     print("=" * 60)
+
+    # 安装完成后提示启动
+    wuwo_bat = wuwo_dir / "wuwo.bat"
+    print()
+    print("  启动托盘请在新窗口运行:")
+    print(f"    {wuwo_bat}")
     return 0
 
 
