@@ -24,9 +24,8 @@ GITHUB_BASE_URL = f"https://github.com/{GITHUB_OWNER}"
 
 # pip 镜像列表：依次尝试，任意一个成功即可
 PIP_INDEX_URLS = [
-    "https://pypi.tuna.tsinghua.edu.cn/simple",    # 清华
+    "https://pypi.mirrors.ustc.edu.cn/simple/",   # 中科大（首选）
     "https://mirrors.aliyun.com/pypi/simple/",     # 阿里云
-    "https://pypi.mirrors.ustc.edu.cn/simple/",   # 中科大
     "https://pypi.org/simple",                     # 官方
 ]
 
@@ -337,7 +336,7 @@ def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path)
 
     print(f"      pip install {pip_name} → {hidden_dir}")
     last_err = ""
-    mirror_labels = ["清华", "阿里云", "中科大", "PyPI 官方"]
+    mirror_labels = ["中科大", "阿里云", "PyPI 官方"]
     for idx_url, label in zip(PIP_INDEX_URLS, mirror_labels):
         try:
             result = subprocess.run(
