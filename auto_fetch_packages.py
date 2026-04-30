@@ -12,6 +12,7 @@ auto_fetch_packages.py
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -133,12 +134,29 @@ def check_missing_packages(
 
     for pkg_name in sorted(registry.keys()):
         pkg_dir = source_dir / pkg_name
-        if pkg_dir.is_dir():
+        has_package_py = bool(list(pkg_dir.glob("*/package.py"))) if pkg_dir.is_dir() else False
+        if has_package_py:
             existing.append(pkg_name)
         else:
+            # 目录存在但无有效版本时，视为缺失（会触发重新 clone）
             missing.append(pkg_name)
 
     return existing, missing
+
+
+def _safe_rmtree(path: Path) -> None:
+    """尽量删除目录（处理 Windows 只读文件导致的删除失败）。"""
+    if not path.exists():
+        return
+
+    def _onerror(func, p, exc_info):
+        try:
+            os.chmod(p, 0o777)
+            func(p)
+        except Exception:
+            pass
+
+    shutil.rmtree(path, onerror=_onerror)
 
 
 def _check_git_available() -> bool:
@@ -187,12 +205,12 @@ def clone_package(package_name: str, repo_name: str, target_dir: Path) -> Tuple[
             text=True,
         )
 
-        return True, "克隆完成 ✓"
+        return True, "克隆完成 OK"
 
     except subprocess.TimeoutExpired:
         # 超时后清理不完整的目录
         if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
+            _safe_rmtree(dest)
         return False, "git clone 超时（300s）"
     except FileNotFoundError:
         return False, "git 命令未找到，请确保 git 已安装并在 PATH 中"
@@ -225,7 +243,7 @@ def run_init_script(package_dir: Path, init_bat_path: str) -> Tuple[bool, str]:
         if result.returncode != 0:
             stderr = result.stderr.strip() if result.stderr else "(无错误输出)"
             return False, f"init 脚本执行失败 (exit {result.returncode}): {stderr}"
-        return True, "init 脚本执行完成 ✓"
+        return True, "init 脚本执行完成 OK"
 
     except subprocess.TimeoutExpired:
         return False, f"init 脚本执行超时（600s）: {init_bat_path}"
@@ -244,7 +262,7 @@ def print_status_table(existing: List[str], missing: List[str]) -> None:
     max_name_len = max((len(name) for name, _ in all_pkgs), default=0)
 
     for name, exists in all_pkgs:
-        status = "[✓]" if exists else "[✗]"
+        status = "[OK]" if exists else "[MISS]"
         state = "已存在" if exists else "缺失"
         print(f"  {status} {name:<{max_name_len}}  {state}")
 
@@ -576,7 +594,7 @@ def main() -> int:
         for pkg in pip_deps:
             meta = PACKAGE_REGISTRY[pkg]
             ok, msg = install_pip_package_to_3rd(pkg, meta, third_party_dir)
-            print(f"  [{'✓' if ok else '✗'}] {pkg}: {msg}")
+            print(f"  [{'OK' if ok else 'FAIL'}] {pkg}: {msg}")
             if not ok:
                 fail += 1
         return 1 if fail else 0
@@ -594,8 +612,16 @@ def main() -> int:
         # 若目标包在 _GITHUB_PACKAGES 但本地不存在，先克隆它再读 requires
         if args.for_package in _GITHUB_PACKAGES:
             pkg_dir = source_dir / args.for_package
-            if not pkg_dir.exists():
-                print(f"[信息] {args.for_package} 不在 rez-package-source，先克隆...")
+            pkg_files = list(pkg_dir.glob("*/package.py")) if pkg_dir.exists() else []
+            if (not pkg_dir.exists()) or (not pkg_files):
+                if pkg_dir.exists() and not pkg_files:
+                    print(f"[信息] {args.for_package} 目录存在但缺少 package.py，先清理后重克隆...")
+                    try:
+                        _safe_rmtree(pkg_dir)
+                    except Exception as e:
+                        print(f"[WARN] 清理损坏目录失败: {e}")
+                else:
+                    print(f"[信息] {args.for_package} 不在 rez-package-source，先克隆...")
                 if _check_git_available():
                     _info = _GITHUB_PACKAGES[args.for_package]
                     _ok, _msg = clone_package(args.for_package, _info["repo"], source_dir)
@@ -648,12 +674,12 @@ def main() -> int:
                 print(f"[信息] 以下依赖不在注册表中，查询 PyPI…: {not_in_registry}")
                 for r in not_in_registry:
                     if is_pypi_package(r):
-                        print(f"        ✅ {r} 在 PyPI 上存在，加入 pip 安装列表")
+                        print(f"        [OK] {r} 在 PyPI 上存在，加入 pip 安装列表")
                         pip_deps.append(r)
                         # 动态加入注册表（仅当前运行有效）
                         PACKAGE_REGISTRY[r] = {"pip_name": r, "python_ver": "3.12"}
                     else:
-                        print(f"        ⚠️  {r} 在 PyPI 上未找到，跳过")
+                        print(f"        [WARN] {r} 在 PyPI 上未找到，跳过")
 
             if github_deps:
                 print(f"[信息] 将检查 GitHub 包: {github_deps}")
@@ -731,7 +757,7 @@ def main() -> int:
                 if args.force and pkg_dir.exists():
                     print("      (--force) 删除已有目录...")
                     try:
-                        shutil.rmtree(pkg_dir)
+                        _safe_rmtree(pkg_dir)
                     except Exception as e:
                         print(f"      [错误] 删除失败: {e}")
                         fail_count += 1
@@ -785,10 +811,10 @@ def main() -> int:
             print(f"  [{pkg_name}]")
             ok, msg = install_pip_package_to_3rd(pkg_name, meta, third_party_dir)
             if ok:
-                print(f"  [✓] {msg}")
+                print(f"  [OK] {msg}")
                 pip_success += 1
             else:
-                print(f"  [✗] {msg}")
+                print(f"  [FAIL] {msg}")
                 pip_fail += 1
 
         print(f"\n[pip] {pip_success} 个成功, {pip_fail} 个失败")
@@ -810,10 +836,10 @@ def main() -> int:
             print(f"  [{pkg_name}]")
             ok, msg = install_nuget_package_to_3rd(pkg_name, meta, third_party_dir)
             if ok:
-                print(f"  [\u2713] {msg}")
+                print(f"  [OK] {msg}")
                 nuget_success += 1
             else:
-                print(f"  [\u2717] {msg}")
+                print(f"  [FAIL] {msg}")
                 nuget_fail += 1
 
         if nuget_fail:

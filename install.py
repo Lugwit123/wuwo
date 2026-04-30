@@ -22,6 +22,7 @@ wuwo One-Click Installer
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -186,7 +187,7 @@ def install_packages(python_exe: Path) -> None:
 # ─────────────────────────────────────────────
 
 def _ask_use_default_paths(build_path: Path, release_path: Path, third_party_path: Path) -> bool:
-    """弹出对话框询问是否使用默认路径。优先用 tkinter，失败回退命令行。"""
+    """弹出对话框询问是否使用默认路径。优先 tkinter，其次 PowerShell，最后命令行。"""
     build_str         = str(build_path).replace("\\", "/")
     release_str       = str(release_path).replace("\\", "/")
     third_party_str   = str(third_party_path).replace("\\", "/")
@@ -200,7 +201,7 @@ def _ask_use_default_paths(build_path: Path, release_path: Path, third_party_pat
         f"NO  = open config.yaml in Notepad to edit manually"
     )
 
-    # tkinter —— 标准安装版 Python 内置，直接可用
+    # tkinter —— 标准安装版 Python 通常内置，优先使用
     try:
         import tkinter as tk
         from tkinter import messagebox
@@ -211,7 +212,86 @@ def _ask_use_default_paths(build_path: Path, release_path: Path, third_party_pat
         root.destroy()
         return result
     except Exception as exc:
-        warn(f"tkinter 弹窗失败: {exc}，使用命令行询问。")
+        warn(f"tkinter 弹窗失败: {exc}，尝试 PowerShell 弹窗。")
+
+    # PowerShell 回退：使用 WinForms 自定义窗口，不依赖 tkinter
+    try:
+        ps_title = json.dumps(title, ensure_ascii=False)
+        ps_build = json.dumps(build_str, ensure_ascii=False)
+        ps_release = json.dumps(release_str, ensure_ascii=False)
+        ps_third = json.dumps(third_party_str, ensure_ascii=False)
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -AssemblyName System.Drawing; "
+            f"$title = {ps_title}; "
+            f"$build = {ps_build}; "
+            f"$release = {ps_release}; "
+            f"$third = {ps_third}; "
+            "$form = New-Object System.Windows.Forms.Form; "
+            "$form.Text = $title; "
+            "$form.StartPosition = 'CenterScreen'; "
+            "$form.Size = New-Object System.Drawing.Size(820, 380); "
+            "$form.FormBorderStyle = 'FixedDialog'; "
+            "$form.MaximizeBox = $false; "
+            "$form.MinimizeBox = $false; "
+            "$form.TopMost = $true; "
+            "$font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9); "
+            "$mono = New-Object System.Drawing.Font('Consolas', 9); "
+            "$label1 = New-Object System.Windows.Forms.Label; "
+            "$label1.Text = 'Use recommended default paths for rez packages?'; "
+            "$label1.Location = New-Object System.Drawing.Point(20, 15); "
+            "$label1.Size = New-Object System.Drawing.Size(760, 24); "
+            "$label1.Font = $font; "
+            "$form.Controls.Add($label1); "
+            "$label2 = New-Object System.Windows.Forms.Label; "
+            "$label2.Text = 'Selected paths:'; "
+            "$label2.Location = New-Object System.Drawing.Point(20, 45); "
+            "$label2.Size = New-Object System.Drawing.Size(760, 20); "
+            "$label2.Font = $font; "
+            "$form.Controls.Add($label2); "
+            "$box = New-Object System.Windows.Forms.TextBox; "
+            "$box.Multiline = $true; "
+            "$box.ReadOnly = $true; "
+            "$box.ScrollBars = 'Vertical'; "
+            "$box.Font = $mono; "
+            "$box.Location = New-Object System.Drawing.Point(20, 70); "
+            "$box.Size = New-Object System.Drawing.Size(760, 210); "
+            "$box.Text = ('build      : ' + $build + [Environment]::NewLine + "
+            "             'release    : ' + $release + [Environment]::NewLine + "
+            "             'third_party: ' + $third + [Environment]::NewLine + [Environment]::NewLine + "
+            "             'Yes = auto update config.yaml' + [Environment]::NewLine + "
+            "             'No  = open config.yaml for manual editing'); "
+            "$form.Controls.Add($box); "
+            "$btnYes = New-Object System.Windows.Forms.Button; "
+            "$btnYes.Text = 'Use Defaults (Yes)'; "
+            "$btnYes.Location = New-Object System.Drawing.Point(470, 295); "
+            "$btnYes.Size = New-Object System.Drawing.Size(150, 34); "
+            "$btnYes.Font = $font; "
+            "$btnYes.Add_Click({ $form.Tag = 'YES'; $form.Close() }); "
+            "$form.Controls.Add($btnYes); "
+            "$btnNo = New-Object System.Windows.Forms.Button; "
+            "$btnNo.Text = 'Edit Manually (No)'; "
+            "$btnNo.Location = New-Object System.Drawing.Point(630, 295); "
+            "$btnNo.Size = New-Object System.Drawing.Size(150, 34); "
+            "$btnNo.Font = $font; "
+            "$btnNo.Add_Click({ $form.Tag = 'NO'; $form.Close() }); "
+            "$form.Controls.Add($btnNo); "
+            "$form.AcceptButton = $btnYes; "
+            "$form.CancelButton = $btnNo; "
+            "$null = $form.ShowDialog(); "
+            "if ($form.Tag -eq 'YES') { exit 0 } else { exit 1 }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode in (0, 1):
+            return result.returncode == 0
+        warn("PowerShell 弹窗返回异常，使用命令行询问。")
+    except Exception as exc:
+        warn(f"PowerShell 弹窗失败: {exc}，使用命令行询问。")
 
     # 回退：命令行
     while True:
@@ -246,7 +326,7 @@ def _update_config_yaml(config_yaml: Path, build_path: Path, release_path: Path,
         content, flags=re.MULTILINE,
     )
     config_yaml.write_text(content, encoding="utf-8")
-    ok(f"config.yaml 已更新:")
+    ok("config.yaml 已更新:")
     ok(f"  packages.build         = {build_str}")
     ok(f"  packages.release       = {release_str}")
     ok(f"  packages.third_party   = {third_party_str}")
@@ -291,7 +371,7 @@ def configure_rez_paths(wuwo_dir: Path) -> None:
     default_release       = parent / "rez-package-release"
     default_third_party   = parent / "rez-package-3rd"
 
-    print(f"\n  推荐默认路径:")
+    print("\n  推荐默认路径:")
     print(f"    packages.build         = {default_build}")
     print(f"    packages.release       = {default_release}")
     print(f"    packages.third_party   = {default_third_party}")
@@ -315,7 +395,7 @@ def fetch_ltray_package(rez_source_dir: Path) -> None:
     pkg_dir = rez_source_dir / "l_tray"
     if pkg_dir.exists():
         # 已存在则 pull 最新
-        info(f"l_tray 已存在，尝试 git pull ...")
+        info("l_tray 已存在，尝试 git pull ...")
         result = subprocess.run(
             ["git", "-C", str(pkg_dir), "pull", "--ff-only"],
             capture_output=True, text=True
@@ -323,7 +403,7 @@ def fetch_ltray_package(rez_source_dir: Path) -> None:
         if result.returncode == 0:
             ok("l_tray git pull 完成。")
         else:
-            warn(f"git pull 失败（可能有本地改动），继续使用现有版本。")
+            warn("git pull 失败（可能有本地改动），继续使用现有版本。")
         return
 
     url = "https://github.com/Lugwit123/l_tray.git"

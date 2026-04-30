@@ -9,6 +9,8 @@ REM Get script directory
 set "SCRIPT_DIR=%~dp0"
 set "VENV_DIR=%SCRIPT_DIR%py_312"
 set "PYTHON_EXE=%VENV_DIR%\python.exe"
+set "REZ_EXE=%VENV_DIR%\Scripts\rez.exe"
+set "REZ_SCRIPT=%VENV_DIR%\Scripts\rez-script.py"
 set "LugwitToolDir=%SCRIPT_DIR%..\.."
 set "WUWO_CONFIG_DIR=%SCRIPT_DIR%config"
 
@@ -17,12 +19,13 @@ REM Package paths
 REM Source repo: <this>/../rez-package-source/<pkg_name>/<version>/package.py (dev, no install needed)
 set "SOURCE_PACKAGES=%SCRIPT_DIR%..\rez-package-source"
 set "LOCAL_PACKAGES=%SCRIPT_DIR%packages"
+set "THIRD_PARTY_PACKAGES=%SCRIPT_DIR%..\rez-package-3rd"
 set "BUILD_PACKAGES=%SCRIPT_DIR%..\rez-package-build"
 set "RELEASE_PACKAGES=%SCRIPT_DIR%..\rez-package-release"
 
 REM Set REZ_PACKAGES_PATH
-REM Priority: source -> local -> build -> release (source wins for same package during dev)
-set "REZ_PACKAGES_PATH=%SOURCE_PACKAGES%;%LOCAL_PACKAGES%;%BUILD_PACKAGES%;%RELEASE_PACKAGES%"
+REM Priority: source -> local -> 3rd -> build -> release (source wins for same package during dev)
+set "REZ_PACKAGES_PATH=%SOURCE_PACKAGES%;%LOCAL_PACKAGES%;%THIRD_PARTY_PACKAGES%;%BUILD_PACKAGES%;%RELEASE_PACKAGES%"
 
 REM Set Rez configuration file
 set "REZ_CONFIG_FILE=%SCRIPT_DIR%rezconfig.py"
@@ -68,7 +71,18 @@ for /f "tokens=1*" %%A in ("%_REST%") do (
     )
 )
 REM Run native rez command with full forwarded arguments
-"%PYTHON_EXE%" -m rez %_REST%
+if exist "%REZ_EXE%" goto :run_rez_exe
+if exist "%REZ_SCRIPT%" goto :run_rez_script
+echo [wuwo] ERROR: rez executable not found.
+echo [wuwo] Try reinstalling dependencies: "%PYTHON_EXE%" -m pip install rez
+exit /b 1
+
+:run_rez_exe
+"%REZ_EXE%" %_REST%
+goto :eof
+
+:run_rez_script
+"%PYTHON_EXE%" "%REZ_SCRIPT%" %_REST%
 goto :eof
 
 :start_chatroom_backend
@@ -80,7 +94,15 @@ set "CHATROOM_ENABLE_NOTEPAD=0"
 if /i "%~2"=="notepad" set "CHATROOM_ENABLE_NOTEPAD=1"
 
 REM Start backend via Rez env (port is controlled by ChatRoom backend code/bat, default 1026)
-"%PYTHON_EXE%" -m rez env ChatRoom -- cmd /c "%LugwitToolDir%\rez-package-source\ChatRoom\999.0\src\ChatRoom\run_backend_server.bat"
+if exist "%REZ_EXE%" (
+    "%REZ_EXE%" env ChatRoom -- cmd /c "%LugwitToolDir%\rez-package-source\ChatRoom\999.0\src\ChatRoom\run_backend_server.bat"
+) else if exist "%REZ_SCRIPT%" (
+    "%PYTHON_EXE%" "%REZ_SCRIPT%" env ChatRoom -- cmd /c "%LugwitToolDir%\rez-package-source\ChatRoom\999.0\src\ChatRoom\run_backend_server.bat"
+) else (
+    echo [wuwo] ERROR: rez executable not found.
+    echo [wuwo] Try reinstalling dependencies: "%PYTHON_EXE%" -m pip install rez
+    exit /b 1
+)
 endlocal
 goto :eof
 

@@ -38,7 +38,7 @@ if exist "%INSTALLER_DIR%install.py" (
 set "PYTHON_DIR=%WUWO_DIR%\py_312"
 set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 
-REM -- Python 3.12.10 via nuget (full green package: includes tkinter + pip, no install needed)
+REM -- Python 3.12.10 via nuget (portable package, pip available; tkinter may be unavailable)
 set "FULL_VER=3.12.10"
 set "NUGET_URL=https://www.nuget.org/api/v2/package/python/%FULL_VER%"
 set "NUPKG_FILE=%WUWO_DIR%\python.%FULL_VER%.zip"
@@ -95,7 +95,7 @@ if exist "%PYTHON_EXE%" (
     rmdir /s /q "%PYTHON_DIR%" 2>nul
 )
 
-echo [2/3] Downloading Python %FULL_VER% (nuget full green package, includes tkinter + pip)...
+echo [2/3] Downloading Python %FULL_VER% (nuget portable package, tkinter not guaranteed)...
 echo       URL: %NUGET_URL%
 echo.
 
@@ -165,8 +165,8 @@ del /f /q "%NUPKG_FILE%" 2>nul
 
 REM -- 2c: 检查 tkinter 所需的 Tcl/Tk DLL --
 if not exist "%PYTHON_DIR%\tcl86t.dll" (
-    echo [WARN] tcl86t.dll not found - tkinter unavailable.
-    echo        install.py will use command-line mode. l_tray uses PySide6, not tkinter.
+    echo [WARN] tcl86t.dll not found - tkinter may be unavailable in nuget Python.
+    echo        install.py will fall back to PowerShell/command-line prompt mode.
 )
 echo [OK] Python %FULL_VER% ready at: %PYTHON_DIR%
 echo.

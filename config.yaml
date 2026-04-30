@@ -8,10 +8,10 @@ packages:
   local: "packages"
   
   # Build packages directory (development builds)
-  build: "//10.219.191.222/d/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-package-build"
+  build: "D:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-package-build"
   
   # Release packages directory (stable releases)
-  release: "//10.219.191.222/d/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-package-release"
+  release: "D:/TD_Depot/Software/Lugwit_syncPlug/lugwit_insapp/trayapp/wuwo_test_install/rez-package-release"
 
 # Python Environment
 # ------------------
