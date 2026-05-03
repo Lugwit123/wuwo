@@ -139,7 +139,7 @@ def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> 
     rest = tl[i:]
     out: List[str] = []
     for t in rest:
-        if not t or t.startswith("-"):
+        if not t or t.startswith("-") or t.startswith("."):
             continue
         root = t.split("-")[0].lower()
         if not root:
@@ -148,6 +148,12 @@ def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> 
             continue
         out.append(root)
     return out
+
+
+def has_update_ephemeral(tokens: List[str]) -> bool:
+    """检测是否包含 '.updata' / '.update' 临时请求。"""
+    eph = {t.strip().lower() for t in tokens if t.startswith(".")}
+    return (".updata" in eph) or (".update" in eph)
 
 
 def registry_yaml_path(source_dir: Path) -> Path:
@@ -436,6 +442,31 @@ def ensure_github_packages_for_rez_env(
     return fails
 
 
+def update_github_packages_for_rez_env(known: List[str], source_dir: Path) -> int:
+    """更新当前 env 子图中的 GitHub 包（git pull --ff-only）。"""
+    if not known:
+        return 0
+    if not _check_git_available():
+        print("[for-rez-env] [错误] git 不可用，无法更新 GitHub 包", file=sys.stderr)
+        return 1
+
+    fails = 0
+    chain = collect_transitive_github_packages(known, source_dir)
+    for pkg_name in chain:
+        pkg_dir = source_dir / pkg_name
+        if not (pkg_dir / ".git").is_dir():
+            continue
+        entry = _GITHUB_PACKAGES.get(pkg_name, {})
+        repo_url = _github_clone_url(pkg_name, entry)
+        ok_pull, pull_msg = _git_pull_with_mirrors(pkg_dir, repo_url)
+        if ok_pull:
+            print(f"  [OK] github update {pkg_name}")
+        else:
+            print(f"  [WARN] github update {pkg_name} 失败: {pull_msg}", file=sys.stderr)
+            fails += 1
+    return fails
+
+
 def _safe_rmtree(path: Path) -> None:
     """尽量删除目录（处理 Windows 只读文件导致的删除失败）。"""
     if not path.exists():
@@ -464,6 +495,67 @@ def _check_git_available() -> bool:
         return False
 
 
+def _build_git_mirror_urls(url: str) -> List[str]:
+    urls = [url]
+    if url.startswith("https://github.com/"):
+        urls.append("https://ghproxy.com/" + url)
+        urls.append(url.replace("https://github.com/", "https://gitclone.com/github.com/"))
+    out: List[str] = []
+    seen = set()
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _git_clone_with_mirrors(dest: Path, repo_url: str, timeout: int = 300) -> Tuple[bool, str]:
+    last_err = ""
+    for url in _build_git_mirror_urls(repo_url):
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", url, str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return True, f"git clone 成功: {url}"
+        last_err = (result.stderr or result.stdout or "").strip()
+    return False, f"git clone 全部镜像失败: {last_err}"
+
+
+def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> Tuple[bool, str]:
+    base = subprocess.run(
+        ["git", "-C", str(repo_dir), "pull", "--ff-only"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if base.returncode == 0:
+        return True, "origin pull 完成"
+    branch = "HEAD"
+    b = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if b.returncode == 0 and b.stdout.strip():
+        branch = b.stdout.strip()
+
+    last_err = (base.stderr or base.stdout or "").strip()
+    for url in _build_git_mirror_urls(repo_url):
+        res = subprocess.run(
+            ["git", "-C", str(repo_dir), "pull", "--ff-only", url, branch],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if res.returncode == 0:
+            return True, f"镜像 pull 完成: {url}"
+        last_err = (res.stderr or res.stdout or "").strip()
+    return False, f"git pull 全部镜像失败: {last_err}"
+
+
 def clone_package(package_name: str, target_dir: Path) -> Tuple[bool, str]:
     """从 GitHub clone 包到目标目录（URL 由注册表 entry 与 github_owner 决定）。"""
     entry = _GITHUB_PACKAGES.get(package_name, {})
@@ -471,15 +563,9 @@ def clone_package(package_name: str, target_dir: Path) -> Tuple[bool, str]:
     dest = target_dir / package_name
 
     try:
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            return False, f"git clone 失败: {stderr}"
+        ok_clone, clone_msg = _git_clone_with_mirrors(dest, url, timeout=300)
+        if not ok_clone:
+            return False, clone_msg
 
         # 设置 core.longpaths = true
         subprocess.run(
@@ -489,7 +575,7 @@ def clone_package(package_name: str, target_dir: Path) -> Tuple[bool, str]:
             text=True,
         )
 
-        return True, "克隆完成 OK"
+        return True, clone_msg
 
     except subprocess.TimeoutExpired:
         # 超时后清理不完整的目录
@@ -685,7 +771,9 @@ def check_python_executable() -> Optional[Path]:
         return None
 
 
-def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path) -> Tuple[bool, str]:
+def install_pip_package_to_3rd(
+    pkg_name: str, meta: dict, third_party_dir: Path, *, force_reinstall: bool = False
+) -> Tuple[bool, str]:
     """通过 pip install 安装第三方包到 rez-package-3rd 目录。
 
     Args:
@@ -703,9 +791,11 @@ def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path)
     pkg_dir = third_party_dir / pkg_name / rez_ver
     hidden_dir = pkg_dir / f".{pkg_name}"
 
-    # 已存在则跳过
-    if (pkg_dir / "package.py").exists():
+    # 已存在则跳过（更新模式可强制重装）
+    if (pkg_dir / "package.py").exists() and not force_reinstall:
         return True, f"已存在: {pkg_dir}"
+    if force_reinstall and pkg_dir.exists():
+        _safe_rmtree(pkg_dir)
 
     # pip install
     python_exe = check_python_executable()
@@ -717,11 +807,23 @@ def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path)
     mirror_labels = ["中科大", "阿里云", "PyPI 官方"]
     for idx_url, label in zip(PIP_INDEX_URLS, mirror_labels):
         try:
+            cmd = [
+                str(python_exe),
+                "-m",
+                "pip",
+                "install",
+                pip_name,
+                "--target",
+                str(hidden_dir),
+                "-i",
+                idx_url,
+                "--no-warn-script-location",
+                "--quiet",
+            ]
+            if force_reinstall:
+                cmd.append("--upgrade")
             result = subprocess.run(
-                [str(python_exe), "-m", "pip", "install", pip_name,
-                 "--target", str(hidden_dir),
-                 "-i", idx_url,
-                 "--no-warn-script-location", "--quiet"],
+                cmd,
                 capture_output=True, text=True, timeout=300
             )
             if result.returncode == 0:
@@ -865,7 +967,9 @@ def _download_nuget_python(pkg_name: str, meta: dict, pkg_dir: Path, third_party
     return True, f"python 安装完成 (nuget): {pkg_dir}"
 
 
-def install_nuget_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path) -> Tuple[bool, str]:
+def install_nuget_package_to_3rd(
+    pkg_name: str, meta: dict, third_party_dir: Path, *, force_reinstall: bool = False
+) -> Tuple[bool, str]:
     """安装 nuget 包（如 python）到 rez-package-3rd。
 
     与 rez-package-source 中声明的 python 依赖一致：默认从 NuGet 解压完整运行时到
@@ -877,8 +981,10 @@ def install_nuget_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Pat
     rez_ver = meta.get("rez_ver", "3.12.10")
     pkg_dir = third_party_dir / pkg_name / rez_ver
 
-    if (pkg_dir / "package.py").exists():
+    if (pkg_dir / "package.py").exists() and not force_reinstall:
         return True, f"已存在: {pkg_dir}"
+    if force_reinstall and pkg_dir.exists():
+        _safe_rmtree(pkg_dir)
 
     pkg_dir.mkdir(parents=True, exist_ok=True)
 
@@ -953,7 +1059,11 @@ def main() -> int:
         source_dir = find_rez_package_source(args.source_dir)
         load_live_registry(source_dir)
         raw_args = args.for_rez_env.split("--")[0]
-        pkg_names = parse_rez_env_root_packages(raw_args.split(), PACKAGE_REGISTRY)
+        raw_tokens = raw_args.split()
+        update_mode = has_update_ephemeral(raw_tokens)
+        pkg_names = parse_rez_env_root_packages(raw_tokens, PACKAGE_REGISTRY)
+        if update_mode:
+            print("[for-rez-env] 检测到 .updata/.update，启用依赖更新模式（GitHub pull + nuget/pip 重装）")
         dynamic_pip: Dict[str, Any] = {}
         for p in pkg_names:
             if p not in PACKAGE_REGISTRY:
@@ -978,6 +1088,8 @@ def main() -> int:
             )
             if fail:
                 return fail
+            if update_mode:
+                fail += update_github_packages_for_rez_env(github_known, source_dir)
 
         nuget_keys, pip_deps, trans_pip_meta, pip_collect_err = (
             collect_for_rez_env_nuget_and_pip_closure(
@@ -993,7 +1105,9 @@ def main() -> int:
             print(f"[for-rez-env] 依赖树中的 nuget 包，安装到 rez-package-3rd: {nuget_keys}")
             for nk in nuget_keys:
                 meta = _NUGET_PACKAGES[nk]
-                ok, msg = install_nuget_package_to_3rd(nk, meta, third_party_dir)
+                ok, msg = install_nuget_package_to_3rd(
+                    nk, meta, third_party_dir, force_reinstall=update_mode
+                )
                 print(f"  [{'OK' if ok else 'FAIL'}] {nk}: {msg}")
                 if not ok:
                     fail += 1
@@ -1006,7 +1120,9 @@ def main() -> int:
         print(f"[for-rez-env] 将安装 pip 包: {pip_deps}")
         for pkg in pip_deps:
             meta = merged_registry[pkg]
-            ok, msg = install_pip_package_to_3rd(pkg, meta, third_party_dir)
+            ok, msg = install_pip_package_to_3rd(
+                pkg, meta, third_party_dir, force_reinstall=update_mode
+            )
             print(f"  [{'OK' if ok else 'FAIL'}] {pkg}: {msg}")
             if not ok:
                 fail += 1

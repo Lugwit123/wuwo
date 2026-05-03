@@ -4,7 +4,7 @@
 wuwo One-Click Installer
 ========================
 全流程自动化安装 wuwo 环境：
-  1. 下载 Python 3.12.x 标准安装包（含 pip / tkinter / 完整标准库）
+  1. 下载 Python 3.12.x 标准安装包（含 pip / 完整标准库）
   2. 静默安装到 wuwo/py_312/
   3. 安装依赖（rez / PyYAML / pywin32 / requests）
   4. 弹窗询问 rez 包路径，自动或手动更新 config.yaml
@@ -34,7 +34,7 @@ from pathlib import Path
 #  常量配置
 # ─────────────────────────────────────────────
 PYTHON_FULL_VER = "3.12.10"
-# 标准安装包（含 pip、tkinter、完整标准库）
+# 标准安装包（含 pip、完整标准库）
 INSTALLER_NAME = f"python-{PYTHON_FULL_VER}-amd64.exe"
 INSTALLER_URL  = f"https://www.python.org/ftp/python/{PYTHON_FULL_VER}/{INSTALLER_NAME}"
 MIN_INSTALLER_BYTES = 20_000_000  # 标准安装包约 25 MB，小于 20 MB 视为损坏
@@ -67,6 +67,73 @@ def info(msg: str) -> None:
 
 def warn(msg: str) -> None:
     print(f"  [WARN] {msg}", file=sys.stderr)
+
+
+def _build_git_mirror_urls(url: str) -> list[str]:
+    """给 GitHub URL 生成可重试镜像列表（首个为原始 URL）。"""
+    out = [url]
+    if url.startswith("https://github.com/"):
+        out.append("https://ghproxy.com/" + url)
+        out.append(url.replace("https://github.com/", "https://gitclone.com/github.com/"))
+    # 去重保序
+    seen = set()
+    uniq = []
+    for u in out:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+
+def _git_clone_with_mirrors(repo_url: str, dest: Path, timeout: int = 300) -> tuple[bool, str]:
+    """按镜像列表重试 git clone。"""
+    last_err = ""
+    for url in _build_git_mirror_urls(repo_url):
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", url, str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return True, f"clone 成功: {url}"
+        last_err = (result.stderr or result.stdout or "").strip()
+        warn(f"git clone 失败: {url} -> {last_err[:160]}")
+    return False, f"git clone 全部镜像失败: {last_err}"
+
+
+def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> tuple[bool, str]:
+    """先 origin pull，失败后对镜像 URL 执行 pull <url> <branch> --ff-only。"""
+    base = subprocess.run(
+        ["git", "-C", str(repo_dir), "pull", "--ff-only"],
+        capture_output=True,
+        text=True,
+    )
+    if base.returncode == 0:
+        return True, "origin pull 完成"
+
+    branch = "HEAD"
+    b = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if b.returncode == 0 and b.stdout.strip():
+        branch = b.stdout.strip()
+
+    last_err = (base.stderr or base.stdout or "").strip()
+    for url in _build_git_mirror_urls(repo_url):
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "pull", "--ff-only", url, branch],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True, f"镜像 pull 完成: {url}"
+        last_err = (result.stderr or result.stdout or "").strip()
+        warn(f"git pull 失败: {url} -> {last_err[:160]}")
+
+    return False, f"git pull 全部镜像失败: {last_err}"
 
 
 def download_with_progress(url: str, dest: Path) -> None:
@@ -122,7 +189,7 @@ def download_python_installer(wuwo_dir: Path) -> Path:
 
 
 def install_python(installer: Path, python_dir: Path) -> None:
-    """静默安装 Python 到 python_dir，包含 pip 与 tkinter。"""
+    """静默安装 Python 到 python_dir，包含 pip。"""
     if python_dir.exists():
         info(f"删除已有目录: {python_dir}")
         shutil.rmtree(python_dir)
@@ -135,7 +202,6 @@ def install_python(installer: Path, python_dir: Path) -> None:
     #   /quiet          无 UI
     #   TargetDir       安装目录
     #   Include_pip=1   包含 pip
-    #   Include_tcltk=1 包含 tkinter / tcl/tk
     #   InstallAllUsers=0  仅当前用户（无需管理员）
     #   PrependPath=0   不修改系统 PATH
     cmd = [
@@ -143,7 +209,6 @@ def install_python(installer: Path, python_dir: Path) -> None:
         "/quiet",
         f"TargetDir={python_dir}",
         "Include_pip=1",
-        "Include_tcltk=1",
         "InstallAllUsers=0",
         "PrependPath=0",
         "Shortcuts=0",
@@ -187,34 +252,12 @@ def install_packages(python_exe: Path) -> None:
 # ─────────────────────────────────────────────
 
 def _ask_use_default_paths(build_path: Path, release_path: Path, third_party_path: Path) -> bool:
-    """弹出对话框询问是否使用默认路径。优先 tkinter，其次 PowerShell，最后命令行。"""
+    """弹出对话框询问是否使用默认路径。优先 PowerShell，其次命令行。"""
     build_str         = str(build_path).replace("\\", "/")
     release_str       = str(release_path).replace("\\", "/")
     third_party_str   = str(third_party_path).replace("\\", "/")
     title = "wuwo Installer - Package Paths"
-    msg = (
-        f"Use recommended default paths for rez packages?\n\n"
-        f"  build:         {build_str}\n"
-        f"  release:       {release_str}\n"
-        f"  third_party:   {third_party_str}\n\n"
-        f"YES = use defaults (auto-update config.yaml)\n"
-        f"NO  = open config.yaml in Notepad to edit manually"
-    )
-
-    # tkinter —— 标准安装版 Python 通常内置，优先使用
-    try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        result = messagebox.askyesno(title, msg)
-        root.destroy()
-        return result
-    except Exception as exc:
-        warn(f"tkinter 弹窗失败: {exc}，尝试 PowerShell 弹窗。")
-
-    # PowerShell 回退：使用 WinForms 自定义窗口，不依赖 tkinter
+    # PowerShell：使用 WinForms 自定义窗口
     try:
         ps_title = json.dumps(title, ensure_ascii=False)
         ps_build = json.dumps(build_str, ensure_ascii=False)
@@ -393,28 +436,22 @@ def fetch_ltray_package(rez_source_dir: Path) -> None:
     """仅 clone l_tray 到 rez-package-source，rez 会自动解析依赖。"""
     import subprocess
     pkg_dir = rez_source_dir / "l_tray"
+    repo_url = "https://github.com/Lugwit123/l_tray.git"
     if pkg_dir.exists():
         # 已存在则 pull 最新
         info("l_tray 已存在，尝试 git pull ...")
-        result = subprocess.run(
-            ["git", "-C", str(pkg_dir), "pull", "--ff-only"],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
+        ok_pull, pull_msg = _git_pull_with_mirrors(pkg_dir, repo_url)
+        if ok_pull:
             ok("l_tray git pull 完成。")
         else:
-            warn("git pull 失败（可能有本地改动），继续使用现有版本。")
+            warn(f"{pull_msg}（可能有本地改动），继续使用现有版本。")
         return
 
-    url = "https://github.com/Lugwit123/l_tray.git"
     info(f"克隆 l_tray → {pkg_dir}")
-    info(f"  {url}")
-    result = subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(pkg_dir)],
-        timeout=300
-    )
-    if result.returncode != 0:
-        raise RuntimeError("git clone l_tray 失败，请检查网络或 GitHub 访问权限。")
+    info(f"  {repo_url}")
+    ok_clone, clone_msg = _git_clone_with_mirrors(repo_url, pkg_dir, timeout=300)
+    if not ok_clone:
+        raise RuntimeError(f"git clone l_tray 失败，请检查网络或 GitHub 访问权限。\n  {clone_msg}")
     # 设置长路径支持
     subprocess.run(
         ["git", "config", "core.longpaths", "true"],
@@ -427,18 +464,15 @@ def fetch_lugwit_package_registry(rez_source_dir: Path) -> None:
     """克隆或拉取 Lugwit_PackageRegistry（内含 999.0/package_registry.yaml，供 auto_fetch 使用）。"""
     pkg_dir = rez_source_dir / "Lugwit_PackageRegistry"
     reg_yaml = pkg_dir / "999.0" / "package_registry.yaml"
+    repo_url = "https://github.com/Lugwit123/Lugwit_PackageRegistry.git"
 
     if (pkg_dir / ".git").is_dir():
         info("Lugwit_PackageRegistry 已存在，尝试 git pull --ff-only …")
-        result = subprocess.run(
-            ["git", "-C", str(pkg_dir), "pull", "--ff-only"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
+        ok_pull, pull_msg = _git_pull_with_mirrors(pkg_dir, repo_url)
+        if ok_pull:
             ok("Lugwit_PackageRegistry git pull 完成。")
         else:
-            warn("git pull 失败（可能有本地改动），继续使用现有版本。")
+            warn(f"{pull_msg}（可能有本地改动），继续使用现有版本。")
         return
 
     if reg_yaml.is_file():
@@ -451,17 +485,14 @@ def fetch_lugwit_package_registry(rez_source_dir: Path) -> None:
             f"  请删除或修复后重试: {pkg_dir}"
         )
 
-    url = "https://github.com/Lugwit123/Lugwit_PackageRegistry.git"
     info(f"克隆 Lugwit_PackageRegistry → {pkg_dir}")
-    info(f"  {url}")
-    result = subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(pkg_dir)],
-        timeout=300,
-    )
-    if result.returncode != 0:
+    info(f"  {repo_url}")
+    ok_clone, clone_msg = _git_clone_with_mirrors(repo_url, pkg_dir, timeout=300)
+    if not ok_clone:
         raise RuntimeError(
             "git clone Lugwit_PackageRegistry 失败，请检查网络或 GitHub 访问权限。\n"
-            "  仓库需存在: https://github.com/Lugwit123/Lugwit_PackageRegistry"
+            "  仓库需存在: https://github.com/Lugwit123/Lugwit_PackageRegistry\n"
+            f"  详情: {clone_msg}"
         )
     subprocess.run(
         ["git", "config", "core.longpaths", "true"],
@@ -600,13 +631,10 @@ def _install_pip_package(python_exe: Path, pkg_name: str, meta: dict, pkg_dir: P
 def _install_github_package(pkg_name: str, meta: dict, pkg_dir: Path) -> None:
     """git clone 到 pkg_dir 并运行 init_bat。"""
     repo = meta.get("repo", f"Lugwit123/{pkg_name}")
-    url = f"https://github.com/{repo}.git"
-    result = subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(pkg_dir)],
-        timeout=300
-    )
-    if result.returncode != 0:
-        warn(f"  git clone {repo} 失败。")
+    repo_url = f"https://github.com/{repo}.git"
+    ok_clone, clone_msg = _git_clone_with_mirrors(repo_url, pkg_dir, timeout=300)
+    if not ok_clone:
+        warn(f"  git clone {repo} 失败。{clone_msg}")
         return
     init_bat = meta.get("init_bat")
     if init_bat:

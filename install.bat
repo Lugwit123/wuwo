@@ -25,6 +25,8 @@ REM ============================================================
 
 set "INSTALLER_DIR=%~dp0"
 set "WUWO_REPO=https://github.com/Lugwit123/wuwo.git"
+set "WUWO_REPO_MIRROR1=https://ghproxy.com/https://github.com/Lugwit123/wuwo.git"
+set "WUWO_REPO_MIRROR2=https://gitclone.com/github.com/Lugwit123/wuwo.git"
 
 REM ------ Detect if install.bat is already inside wuwo ------
 REM Only by folder name (case-sensitive): basename must be exactly "wuwo"
@@ -68,6 +70,13 @@ if exist "%WUWO_DIR%\.git" (
     if !errorlevel! neq 0 (
         echo [WARN] git pull --autostash failed. Forcing sync with remote ^(discards local changes to tracked files e.g. config.yaml, install.bat^)...
         git -C "%WUWO_DIR%" fetch origin
+        if !errorlevel! neq 0 (
+            echo [WARN] fetch origin failed, retrying mirrors...
+            git -C "%WUWO_DIR%" fetch "%WUWO_REPO_MIRROR1%"
+            if !errorlevel! neq 0 (
+                git -C "%WUWO_DIR%" fetch "%WUWO_REPO_MIRROR2%"
+            )
+        )
         set "WUWO_UPSTREAM="
         for /f "delims=" %%U in ('git -C "%WUWO_DIR%" rev-parse --abbrev-ref --symbolic-full-name @{u} 2^>nul') do set "WUWO_UPSTREAM=%%U"
         if defined WUWO_UPSTREAM (
@@ -92,8 +101,16 @@ if exist "%WUWO_DIR%\.git" (
     echo       %WUWO_REPO%
     git clone "%WUWO_REPO%" "%WUWO_DIR%"
     if !errorlevel! neq 0 (
-        echo [ERROR] Failed to clone wuwo! Check network / GitHub access.
-        goto :fail
+        echo [WARN] Primary clone failed, retrying mirror #1...
+        git clone "%WUWO_REPO_MIRROR1%" "%WUWO_DIR%"
+        if !errorlevel! neq 0 (
+            echo [WARN] Mirror #1 failed, retrying mirror #2...
+            git clone "%WUWO_REPO_MIRROR2%" "%WUWO_DIR%"
+            if !errorlevel! neq 0 (
+                echo [ERROR] Failed to clone wuwo on all mirrors! Check network / GitHub access.
+                goto :fail
+            )
+        )
     )
     echo [OK] Cloned to: %WUWO_DIR%
     echo.
@@ -231,7 +248,7 @@ echo ============================================================
 echo.
 REM -- Start tray via wuwo.bat (runs rez env l_tray -- start_tray)
 if exist "%WUWO_DIR%\wuwo.bat" (
-    start "wuwo tray" /d "%WUWO_DIR%" cmd /k "wuwo.bat rez env l_tray -- start_tray"
+    start "wuwo tray" /d "%WUWO_DIR%" cmd /k "wuwo.bat rez env l_tray .updata -- start_tray"
 ) else (
     echo [WARN] wuwo.bat not found, skipping auto-start.
     echo        Run manually: %WUWO_DIR%\wuwo.bat
