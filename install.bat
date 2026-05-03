@@ -7,10 +7,10 @@ setlocal enabledelayedexpansion
 REM ============================================================
 REM  wuwo One-Click Installer (Bootstrap)
 REM
-REM  Usage A: install.bat placed OUTSIDE wuwo dir
+REM  Usage A: install.bat not in a folder literally named "wuwo" (case-sensitive)
 REM           -> git clone wuwo into a "wuwo" folder next to this bat
-REM  Usage B: install.bat placed INSIDE wuwo dir (already cloned)
-REM           -> use current directory as wuwo dir directly
+REM  Usage B: install.bat inside a folder named exactly "wuwo" (already cloned)
+REM           -> use that directory as wuwo root (no sibling "wuwo" subfolder)
 REM
 REM  Steps:
 REM    1. Locate / clone wuwo repo
@@ -27,10 +27,11 @@ set "INSTALLER_DIR=%~dp0"
 set "WUWO_REPO=https://github.com/Lugwit123/wuwo.git"
 
 REM ------ Detect if install.bat is already inside wuwo ------
-REM install.py next to install.bat  =>  already inside wuwo
-if exist "%INSTALLER_DIR%install.py" (
+REM Only by folder name (case-sensitive): basename must be exactly "wuwo"
+for %%I in ("%INSTALLER_DIR:~0,-1%") do set "INSTALLER_FOLDER=%%~nxI"
+if "!INSTALLER_FOLDER!"=="wuwo" (
     set "WUWO_DIR=%INSTALLER_DIR:~0,-1%"
-    echo [INFO] install.bat is inside wuwo, using: !WUWO_DIR!
+    echo [INFO] install.bat is under a folder named exactly wuwo, using: !WUWO_DIR!
 ) else (
     set "WUWO_DIR=%INSTALLER_DIR%wuwo"
 )
@@ -185,6 +186,14 @@ echo.
 if !errorlevel! neq 0 (
     echo.
     echo [ERROR] install.py exited with errors. See above for details.
+    goto :fail
+)
+
+echo [INFO] Verifying Lugwit_PackageRegistry / package_registry.yaml ...
+"%PYTHON_EXE%" "%WUWO_DIR%\install.py" --wuwo-dir "%WUWO_DIR%" --ensure-registry-package
+if !errorlevel! neq 0 (
+    echo.
+    echo [ERROR] Registry package check failed. See above for details.
     goto :fail
 )
 

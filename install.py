@@ -8,7 +8,7 @@ wuwo One-Click Installer
   2. 静默安装到 wuwo/py_312/
   3. 安装依赖（rez / PyYAML / pywin32 / requests）
   4. 弹窗询问 rez 包路径，自动或手动更新 config.yaml
-  5. 调用 auto_fetch_packages.py 拉取所有 rez 包
+  5. 克隆 l_tray 与 Lugwit_PackageRegistry 到 rez-package-source；其余包在首次 ``wuwo.bat rez env ...`` 时按需拉取
 
 用法（由 install.bat 调用）:
     python install.py [--wuwo-dir <path>]
@@ -423,6 +423,56 @@ def fetch_ltray_package(rez_source_dir: Path) -> None:
     ok(f"l_tray 克隆完成: {pkg_dir}")
 
 
+def fetch_lugwit_package_registry(rez_source_dir: Path) -> None:
+    """克隆或拉取 Lugwit_PackageRegistry（内含 999.0/package_registry.yaml，供 auto_fetch 使用）。"""
+    pkg_dir = rez_source_dir / "Lugwit_PackageRegistry"
+    reg_yaml = pkg_dir / "999.0" / "package_registry.yaml"
+
+    if (pkg_dir / ".git").is_dir():
+        info("Lugwit_PackageRegistry 已存在，尝试 git pull --ff-only …")
+        result = subprocess.run(
+            ["git", "-C", str(pkg_dir), "pull", "--ff-only"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            ok("Lugwit_PackageRegistry git pull 完成。")
+        else:
+            warn("git pull 失败（可能有本地改动），继续使用现有版本。")
+        return
+
+    if reg_yaml.is_file():
+        info("注册表 yaml 已存在（非 git 工作副本），跳过克隆。")
+        return
+
+    if pkg_dir.exists():
+        raise RuntimeError(
+            f"Lugwit_PackageRegistry 目录存在但不完整（缺少 {reg_yaml} 且无 .git）。\n"
+            f"  请删除或修复后重试: {pkg_dir}"
+        )
+
+    url = "https://github.com/Lugwit123/Lugwit_PackageRegistry.git"
+    info(f"克隆 Lugwit_PackageRegistry → {pkg_dir}")
+    info(f"  {url}")
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", url, str(pkg_dir)],
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "git clone Lugwit_PackageRegistry 失败，请检查网络或 GitHub 访问权限。\n"
+            "  仓库需存在: https://github.com/Lugwit123/Lugwit_PackageRegistry"
+        )
+    subprocess.run(
+        ["git", "config", "core.longpaths", "true"],
+        cwd=str(pkg_dir),
+        capture_output=True,
+    )
+    ok(f"Lugwit_PackageRegistry 克隆完成: {pkg_dir}")
+    if not reg_yaml.is_file():
+        warn(f"克隆完成但未找到 {reg_yaml}，请确认远端仓库已包含注册表文件。")
+
+
 # ─────────────────────────────────────────────
 #  Step 6: 按需安装第三方包到 rez-package-3rd
 # ─────────────────────────────────────────────
@@ -510,20 +560,38 @@ def _install_pip_package(python_exe: Path, pkg_name: str, meta: dict, pkg_dir: P
         warn(f"  {pkg_name} pip install 失败，可手动安装: pip install {pip_name}")
         return
 
-    # 生成 rez package.py
+    # 生成 rez package.py（pywin32：--target 时 .pth 不生效，须显式追加 win32/lib 等路径）
+    next_minor = (
+        f'{python_ver.rsplit(".", 1)[0]}.{int(python_ver.rsplit(".", 1)[-1]) + 1}'
+        if "." in python_ver
+        else python_ver
+    )
+    req_inner = f'"python-{python_ver}+<{next_minor}"'
+    if pkg_name == "winshell":
+        req_inner += ', "pywin32"'
+    if pkg_name == "pywin32":
+        py_cmds = (
+            '    env.PYTHONPATH.append("{root}/.pywin32")\n'
+            '    env.PYTHONPATH.append("{root}/.pywin32/win32")\n'
+            '    env.PYTHONPATH.append("{root}/.pywin32/win32/lib")\n'
+            '    env.PYTHONPATH.append("{root}/.pywin32/Pythonwin")\n'
+        )
+    else:
+        py_cmds = f'    env.PYTHONPATH.prepend("{{root}}/.{pkg_name}")\n'
+
     package_py = pkg_dir / "package.py"
     package_py.write_text(
         f'# -*- coding: utf-8 -*-\n'
         f'name = "{pkg_name}"\n'
         f'version = "{rez_ver}"\n'
         f'description = "{meta.get("description", pkg_name)}"\n'
-        f'requires = ["python-{python_ver}+<{python_ver.rsplit(".", 1)[0] + "." + str(int(python_ver.rsplit(".", 1)[-1]) + 1) if "." in python_ver else python_ver}"]\n'
+        f"requires = [{req_inner}]\n"
         f'build_command = False\n'
         f'cachable = True\n'
         f'relocatable = True\n'
         f'\n'
         f'def commands():\n'
-        f'    env.PYTHONPATH.prepend("{{root}}/.{pkg_name}")\n',
+        f"{py_cmds}",
         encoding="utf-8"
     )
     ok(f"  {pkg_name} 安装完成: {pkg_dir}")
@@ -581,6 +649,11 @@ def main() -> int:
     parser.add_argument("--wuwo-dir",      default=None,        help="wuwo 仓库目录")
     parser.add_argument("--skip-config",   action="store_true", help="跳过 rez 路径配置（测试/CI）")
     parser.add_argument("--skip-packages", action="store_true", help="跳过拉取 rez 包（测试/CI）")
+    parser.add_argument(
+        "--ensure-registry-package",
+        action="store_true",
+        help="仅克隆/拉取 Lugwit_PackageRegistry 并校验 package_registry.yaml 后退出",
+    )
     args = parser.parse_args()
 
     wuwo_dir   = Path(args.wuwo_dir).resolve() if args.wuwo_dir else Path(__file__).resolve().parent
@@ -591,6 +664,19 @@ def main() -> int:
     print("  wuwo One-Click Installer")
     print(f"  wuwo 目录: {wuwo_dir}")
     print("=" * 60)
+
+    if args.ensure_registry_package:
+        cfg_paths = read_config_paths(wuwo_dir)
+        rez_source = cfg_paths["source"]
+        rez_source.mkdir(parents=True, exist_ok=True)
+        fetch_lugwit_package_registry(rez_source)
+        reg_yaml = rez_source / "Lugwit_PackageRegistry" / "999.0" / "package_registry.yaml"
+        if not reg_yaml.is_file():
+            raise RuntimeError(
+                f"Lugwit_PackageRegistry 已拉取但缺少注册表文件:\n  {reg_yaml}"
+            )
+        ok(f"注册表就绪: {reg_yaml}")
+        return 0
 
     TOTAL_STEPS = 5
 
@@ -623,7 +709,7 @@ def main() -> int:
     if args.skip_packages:
         info("--skip-packages: 跳过 rez 包拉取。")
     else:
-        step(5, TOTAL_STEPS, "拉取 l_tray 包（其余依赖由 wuwo.bat 启动时自动补全）")
+        step(5, TOTAL_STEPS, "拉取 l_tray 与 Lugwit_PackageRegistry（其余依赖由 wuwo.bat rez env 按需补全）")
         # 从 config.yaml 读取路径（空值时用默认）
         cfg_paths   = read_config_paths(wuwo_dir)
         rez_source  = cfg_paths["source"]
@@ -636,8 +722,15 @@ def main() -> int:
             else:
                 info(f"目录已存在: {d}")
         fetch_ltray_package(rez_source)
-        # 注意：其余依赖包（lperforce/L_Tools/pyqt5/pywin32 等）
-        # 由 wuwo.bat 在开启时通过 auto_fetch_packages.py --for-package l_tray 自动补全
+        fetch_lugwit_package_registry(rez_source)
+        reg_yaml = rez_source / "Lugwit_PackageRegistry" / "999.0" / "package_registry.yaml"
+        if not reg_yaml.is_file():
+            raise RuntimeError(
+                f"缺少 Rez 包注册表，wuwo 无法解析依赖。请确认远端已推送该文件:\n  {reg_yaml}"
+            )
+        ok(f"package_registry.yaml 就绪: {reg_yaml}")
+        # 其余依赖包由 wuwo.bat 在 ``rez env ...`` 时通过
+        # auto_fetch_packages.py --for-rez-env 按需克隆 / 安装（无启动全量扫描）
 
     print("\n" + "=" * 60)
     print("  安装完成！")

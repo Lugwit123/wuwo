@@ -5,13 +5,15 @@ auto_fetch_packages.py
 自动检测并从 GitHub 下载缺失的 rez 包到 rez-package-source 目录
 
 用法:
-    python auto_fetch_packages.py                       # 检查并下载全部注册包
+    python auto_fetch_packages.py                       # 手动：检查并下载全部注册表包（非 wuwo 默认行为）
     python auto_fetch_packages.py --check-only          # 仅检查，不下载
     python auto_fetch_packages.py --package l_tray      # 仅处理指定包
     python auto_fetch_packages.py --for-package l_tray  # 读取 l_tray requires，只下载其依赖中注册的缺失包
+    python auto_fetch_packages.py --for-rez-env "rez env l_tray -- ..."  # wuwo.bat rez env 前：解析包名（不含 rez/env 子命令）
 """
 
 import argparse
+import ast
 import os
 import shutil
 import subprocess
@@ -23,6 +25,13 @@ from typing import Any, Dict, List, Optional, Tuple
 GITHUB_OWNER = "Lugwit123"
 GITHUB_BASE_URL = f"https://github.com/{GITHUB_OWNER}"
 
+# 由 load_live_registry() 从 rez-package-source/Lugwit_PackageRegistry/999.0/package_registry.yaml 填充（无内置回退）
+_REGISTRY_GITHUB_OWNER = GITHUB_OWNER
+_GITHUB_PACKAGES: Dict[str, Any] = {}
+_PIP_PACKAGES: Dict[str, Any] = {}
+_NUGET_PACKAGES: Dict[str, Any] = {}
+PACKAGE_REGISTRY: Dict[str, Any] = {}
+
 # pip 镜像列表：依次尝试，任意一个成功即可
 PIP_INDEX_URLS = [
     "https://pypi.mirrors.ustc.edu.cn/simple/",   # 中科大（首选）
@@ -30,50 +39,231 @@ PIP_INDEX_URLS = [
     "https://pypi.org/simple",                     # 官方
 ]
 
-# 一方包：从 Lugwit123 GitHub 克隆安装
-# repo: GitHub 仓库名（与包名同名）
-# init_bat: clone 后需要运行的初始化脚本（相对于包目录），None 表示无需初始化
-_GITHUB_PACKAGES: Dict[str, Any] = {
-    "ChatRoom": {"repo": "ChatRoom", "init_bat": None},
-    "L_Tools": {"repo": "L_Tools", "init_bat": None},
-    "Lugwit_Module": {"repo": "Lugwit_Module", "init_bat": None},
-    "conemu": {"repo": "conemu", "init_bat": None},
-    "l_notepad": {"repo": "l_notepad", "init_bat": None},
-    "l_scheduler": {"repo": "l_scheduler", "init_bat": None},
-    "l_tray": {"repo": "l_tray", "init_bat": None},
-    "lperforce": {"repo": "lperforce", "init_bat": None},
-    "lugwit_auth": {"repo": "lugwit_auth", "init_bat": None},
-    "postgresql": {"repo": "postgresql", "init_bat": "999.0/init.bat"},
-    "pyfory": {"repo": "pyfory", "init_bat": None},
-    "pytracemp": {"repo": "pytracemp", "init_bat": None},
-    "start_multi_app": {"repo": "start_multi_app", "init_bat": None},
-    "view_pkl_tool": {"repo": "view_pkl_tool", "init_bat": None},
+# pip 包装成 rez 时追加的 requires（隐式 pip 依赖，保证解析顺序）
+_PIP_REZ_EXTRA_REQUIRES: Dict[str, List[str]] = {
+    "winshell": ["pywin32"],
 }
 
-# 第三方包：通过 pip 安装，自动生成 rez 包装到 rez-package-3rd
-# pip_name: pip 包名（可含版本约束，如 PyQt5==5.15.11）
-# python_ver: 适配的 Python 版本
-_PIP_PACKAGES: Dict[str, Any] = {
-    "psutil":   {"pip_name": "psutil",          "python_ver": "3.12"},
-    "pyqt5":    {"pip_name": "PyQt5==5.15.11",  "python_ver": "3.12"},
-    "pyside6":  {"pip_name": "PySide6==6.7.0",  "python_ver": "3.12"},
-    "pywin32":  {"pip_name": "pywin32",          "python_ver": "3.12"},
-    "pyyaml":   {"pip_name": "PyYAML",           "python_ver": "3.12"},
-    "watchdog": {"pip_name": "watchdog",         "python_ver": "3.12"},
-}
 
-# nuget 包：下载全量绿色 Python 包到 rez-package-3rd（优先复用已有 wuwo/py_312，避免重复下载）
-_NUGET_PACKAGES: Dict[str, Any] = {
-    "python": {
-        "nuget_name": "python",
-        "nuget_ver": "3.12.10",
-        "rez_ver": "3.12.10",
-        "description": "Python 3.12.10 portable (green, no system install)",
-    },
-}
+def _pip_rez_requires_literal(pkg_name: str, python_ver: str) -> str:
+    nxt = (
+        f'{python_ver.rsplit(".", 1)[0]}.{int(python_ver.rsplit(".", 1)[-1]) + 1}'
+        if "." in python_ver
+        else python_ver
+    )
+    parts: List[str] = [f"python-{python_ver}+<{nxt}"] + _PIP_REZ_EXTRA_REQUIRES.get(pkg_name, [])
+    return "[" + ", ".join(f'"{p}"' for p in parts) + "]"
 
-# 合并为统一注册表（下游代码不需要改动）
-PACKAGE_REGISTRY: Dict[str, Any] = {**_GITHUB_PACKAGES, **_PIP_PACKAGES, **_NUGET_PACKAGES}
+
+def _pip_rez_pythonpath_commands(pkg_name: str) -> str:
+    """pywin32 用 ``pip install --target`` 时目录内 .pth 不会被加载，须显式加入 win32/lib 等路径。"""
+    if pkg_name == "pywin32":
+        h = pkg_name
+        return (
+            f'    env.PYTHONPATH.append("{{root}}/.{h}")\n'
+            f'    env.PYTHONPATH.append("{{root}}/.{h}/win32")\n'
+            f'    env.PYTHONPATH.append("{{root}}/.{h}/win32/lib")\n'
+            f'    env.PYTHONPATH.append("{{root}}/.{h}/Pythonwin")\n'
+        )
+    return f'    env.PYTHONPATH.append("{{root}}/.{pkg_name}")\n'
+
+
+# rez 子命令短名（小写）：不得当作包名，但若与 package_registry 中家族名冲突则保留为包（如 python）。
+_REZ_SUBCOMMAND_ROOTS: frozenset = frozenset(
+    {
+        "env",
+        "bind",
+        "context",
+        "contexts",
+        "forward",
+        "implicit",
+        "view",
+        "gui",
+        "prompt",
+        "suite",
+        "plugins",
+        "config",
+        "complete",
+        "version",
+        "help",
+        "selftest",
+        "memcache",
+        "depends",
+        "cache",
+        "pkg-cache",
+    }
+)
+
+# rez env 常见「选项 + 一个参数」
+_REZ_ENV_ONE_ARG_OPTS: frozenset = frozenset(
+    {
+        "-i",
+        "--interpret",
+        "-t",
+        "--time",
+        "--title",
+    }
+)
+
+
+def _skip_rez_cli_flag_tokens(tokens: List[str], i: int, n: int) -> int:
+    while i < n:
+        tok = tokens[i]
+        if not tok.startswith("-"):
+            break
+        low = tok.lower()
+        if low in _REZ_ENV_ONE_ARG_OPTS and i + 1 < n and not tokens[i + 1].startswith("-"):
+            i += 2
+            continue
+        i += 1
+    return i
+
+
+def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> List[str]:
+    """从 ``rez [flags] env|… [flags] PKG …`` 或 ``PKG …`` 得到 Rez 包家族短名；去掉 rez、子命令与 CLI 选项。
+
+    若某子命令名同时出现在 registry 中（如 python），则不作为子命令剥掉。
+    """
+    tl = [x for x in tokens if x]
+    n = len(tl)
+    reg_roots = {str(k).split("-")[0].lower() for k in registry.keys()}
+    i = 0
+    if i < n and tl[i].lower() == "rez":
+        i += 1
+    i = _skip_rez_cli_flag_tokens(tl, i, n)
+    if i < n:
+        root = tl[i].split("-")[0].lower()
+        if root in _REZ_SUBCOMMAND_ROOTS and root not in reg_roots:
+            i += 1
+    i = _skip_rez_cli_flag_tokens(tl, i, n)
+    rest = tl[i:]
+    out: List[str] = []
+    for t in rest:
+        if not t or t.startswith("-"):
+            continue
+        root = t.split("-")[0].lower()
+        if not root:
+            continue
+        if root in _REZ_SUBCOMMAND_ROOTS and root not in reg_roots:
+            continue
+        out.append(root)
+    return out
+
+
+def registry_yaml_path(source_dir: Path) -> Path:
+    """唯一注册表路径（固定 999.0）。"""
+    return source_dir / "Lugwit_PackageRegistry" / "999.0" / "package_registry.yaml"
+
+
+def load_live_registry(source_dir: Path) -> None:
+    """从 package_registry.yaml 填充 _GITHUB_PACKAGES / _PIP_PACKAGES / _NUGET_PACKAGES / PACKAGE_REGISTRY。缺失或非法则退出进程。"""
+    global _REGISTRY_GITHUB_OWNER, PACKAGE_REGISTRY
+    yaml_path = registry_yaml_path(source_dir)
+    if not yaml_path.is_file():
+        print(
+            "[错误] 缺少注册表（请先运行 install 克隆 Lugwit_PackageRegistry 或放置 yaml）:\n"
+            f"  {yaml_path}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        import yaml
+    except ImportError:
+        print("[错误] 需要 PyYAML: pip install PyYAML", file=sys.stderr)
+        sys.exit(2)
+    try:
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        print(f"[错误] 无法解析注册表 YAML: {yaml_path}\n  {e}", file=sys.stderr)
+        sys.exit(2)
+    owner = data.get("github_owner") or GITHUB_OWNER
+    _REGISTRY_GITHUB_OWNER = str(owner)
+    pkgs = data.get("packages")
+    if not isinstance(pkgs, dict) or not pkgs:
+        print("[错误] package_registry.yaml 中 packages 必须为非空 dict", file=sys.stderr)
+        sys.exit(2)
+    gh: Dict[str, Any] = {}
+    pip: Dict[str, Any] = {}
+    nu: Dict[str, Any] = {}
+    for name, meta in pkgs.items():
+        if not isinstance(meta, dict):
+            continue
+        kind = meta.get("kind")
+        nm = str(name)
+        if kind == "github":
+            entry: Dict[str, Any] = {}
+            if meta.get("repo"):
+                entry["repo"] = meta["repo"]
+            gh[nm] = entry
+        elif kind == "pip":
+            pip[nm] = {
+                "pip_name": meta.get("pip_name", nm),
+                "python_ver": str(meta.get("python_ver", "3.12")),
+            }
+        elif kind == "nuget":
+            nu[nm] = {k: v for k, v in meta.items() if k != "kind"}
+    _GITHUB_PACKAGES.clear()
+    _GITHUB_PACKAGES.update(gh)
+    _PIP_PACKAGES.clear()
+    _PIP_PACKAGES.update(pip)
+    _NUGET_PACKAGES.clear()
+    _NUGET_PACKAGES.update(nu)
+    PACKAGE_REGISTRY.clear()
+    PACKAGE_REGISTRY.update({**_GITHUB_PACKAGES, **_PIP_PACKAGES, **_NUGET_PACKAGES})
+
+
+def _github_clone_url(package_name: str, entry: Dict[str, Any]) -> str:
+    r = entry.get("repo")
+    if r and "/" in str(r):
+        return f"https://github.com/{r}.git"
+    repo = (r or package_name)
+    return f"https://github.com/{_REGISTRY_GITHUB_OWNER}/{repo}.git"
+
+
+def _extract_payload_paths_from_ast(package_py: Path) -> Optional[List[str]]:
+    """仅 ast：无 _REZ_WUWO_PAYLOAD_RELATIVE_PATHS 则 None；多赋值只认最后一次 Assign；非法形状抛 ValueError。"""
+    text = package_py.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(package_py))
+    last_assign: Optional[ast.Assign] = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "_REZ_WUWO_PAYLOAD_RELATIVE_PATHS":
+                    last_assign = node
+    if last_assign is None:
+        return None
+    val = last_assign.value
+    if not isinstance(val, (ast.List, ast.Tuple)):
+        raise ValueError("_REZ_WUWO_PAYLOAD_RELATIVE_PATHS must be a list or tuple of string literals")
+    out: List[str] = []
+    for elt in val.elts:
+        if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+            raise ValueError("_REZ_WUWO_PAYLOAD_RELATIVE_PATHS entries must be string literals")
+        out.append(elt.value)
+    return out
+
+
+def check_github_pkg_payload(source_dir: Path, pkg_name: str) -> Tuple[bool, Optional[str]]:
+    """载荷就绪或无需检查 → (True, None)；缺文件 → (False, msg)；AST 非法 → (False, msg)。"""
+    pkg_dir = source_dir / pkg_name
+    pkg_files = list(pkg_dir.glob("*/package.py")) if pkg_dir.is_dir() else []
+    if not pkg_files:
+        return True, None
+    package_py = pkg_files[0]
+    root = package_py.parent
+    try:
+        paths = _extract_payload_paths_from_ast(package_py)
+    except SyntaxError as e:
+        return False, f"{package_py}: syntax error: {e}"
+    except ValueError as e:
+        return False, str(e)
+    if paths is None:
+        return True, None
+    for rel in paths:
+        p = root / rel
+        if not p.is_file():
+            return False, f"payload file missing: {p}"
+    return True, None
 
 
 def _show_error_popup(title: str, message: str) -> None:
@@ -144,6 +334,108 @@ def check_missing_packages(
     return existing, missing
 
 
+def github_pkg_local_ready(source_dir: Path, pkg_name: str) -> bool:
+    """rez-package-source 下该 GitHub 包是否已有有效 ``*/package.py``。"""
+    pkg_dir = source_dir / pkg_name
+    return bool(list(pkg_dir.glob("*/package.py"))) if pkg_dir.is_dir() else False
+
+
+def collect_transitive_github_packages(
+    root_github_pkgs: List[str], source_dir: Path
+) -> List[str]:
+    """从根包出发 BFS 得到传递闭包内所有 _GITHUB_PACKAGES 包名（有序、去重）。"""
+    out: List[str] = []
+    visited: set[str] = set()
+    queue: List[str] = [p for p in root_github_pkgs if p in _GITHUB_PACKAGES]
+
+    while queue:
+        pkg = queue.pop(0)
+        if pkg in visited:
+            continue
+        visited.add(pkg)
+        out.append(pkg)
+        for r in get_requires_for_package(pkg, source_dir):
+            if r in _GITHUB_PACKAGES:
+                queue.append(r)
+    return out
+
+
+def ensure_github_packages_for_rez_env(
+    known: List[str], source_dir: Path, *, skip_init: bool = False
+) -> int:
+    """按需克隆并校验载荷；clone 就绪但缺载荷时仅运行 999.0/init.bat（若存在）。返回失败次数。"""
+    if not source_dir.exists():
+        source_dir.mkdir(parents=True, exist_ok=True)
+
+    fails = 0
+    max_rounds = 256
+    for _ in range(max_rounds):
+        chain = collect_transitive_github_packages(known, source_dir)
+        target: Optional[str] = None
+        mode: Optional[str] = None  # "clone" | "init_only"
+        for pkg_name in chain:
+            if not github_pkg_local_ready(source_dir, pkg_name):
+                target, mode = pkg_name, "clone"
+                break
+            pay_ok, pay_err = check_github_pkg_payload(source_dir, pkg_name)
+            if pay_ok:
+                continue
+            # AST / 形状错误：不尝试 init
+            if pay_err and "payload file missing" not in pay_err:
+                print(f"[for-rez-env] [错误] 包 {pkg_name}: {pay_err}", file=sys.stderr)
+                fails += 1
+                return fails
+            if not skip_init and (source_dir / pkg_name / "999.0" / "init.bat").is_file():
+                target, mode = pkg_name, "init_only"
+                break
+            print(
+                f"[for-rez-env] [错误] 包 {pkg_name} 缺载荷且无 999.0/init.bat: {pay_err}",
+                file=sys.stderr,
+            )
+            fails += 1
+            return fails
+        if target is None:
+            break
+        pkg_name = target
+        pkg_dir = source_dir / pkg_name
+        if mode == "clone":
+            if not _check_git_available():
+                print("[for-rez-env] [错误] git 不可用，无法克隆缺失包", file=sys.stderr)
+                fails += 1
+                break
+            print(f"[for-rez-env] 克隆缺失包: {pkg_name} ...")
+            ok, msg = clone_package(pkg_name, source_dir)
+            print(f"  [{'OK' if ok else 'FAIL'}] {pkg_name}: {msg}")
+            if not ok:
+                fails += 1
+                break
+            if not skip_init:
+                init_ok, init_msg = run_convention_init_if_present(pkg_dir)
+                print(f"      init: {init_msg}")
+                if not init_ok:
+                    print(f"      [WARN] {init_msg}")
+        elif mode == "init_only":
+            if skip_init:
+                fails += 1
+                break
+            print(f"[for-rez-env] 载荷未就绪，运行 999.0/init.bat: {pkg_name} ...")
+            init_ok, init_msg = run_convention_init_if_present(pkg_dir)
+            print(f"  [{'OK' if init_ok else 'FAIL'}] init: {init_msg}")
+            if not init_ok:
+                fails += 1
+                break
+            pay_ok2, pay_err2 = check_github_pkg_payload(source_dir, pkg_name)
+            if not pay_ok2:
+                print(f"[for-rez-env] [错误] init 后仍缺载荷: {pay_err2}", file=sys.stderr)
+                fails += 1
+                return fails
+    else:
+        print("[for-rez-env] [WARN] 处理轮次过多，中止", file=sys.stderr)
+        fails += 1
+
+    return fails
+
+
 def _safe_rmtree(path: Path) -> None:
     """尽量删除目录（处理 Windows 只读文件导致的删除失败）。"""
     if not path.exists():
@@ -172,18 +464,10 @@ def _check_git_available() -> bool:
         return False
 
 
-def clone_package(package_name: str, repo_name: str, target_dir: Path) -> Tuple[bool, str]:
-    """从 GitHub clone 包到目标目录。
-
-    Args:
-        package_name: 包名（同时用作本地目录名）
-        repo_name: GitHub 仓库名
-        target_dir: rez-package-source 目录
-
-    Returns:
-        (success, message)
-    """
-    url = f"https://github.com/{GITHUB_OWNER}/{repo_name}.git"
+def clone_package(package_name: str, target_dir: Path) -> Tuple[bool, str]:
+    """从 GitHub clone 包到目标目录（URL 由注册表 entry 与 github_owner 决定）。"""
+    entry = _GITHUB_PACKAGES.get(package_name, {})
+    url = _github_clone_url(package_name, entry)
     dest = target_dir / package_name
 
     try:
@@ -229,7 +513,7 @@ def run_init_script(package_dir: Path, init_bat_path: str) -> Tuple[bool, str]:
         (success, message)
     """
     init_path = package_dir / init_bat_path
-    if not init_path.exists():
+    if not init_path.is_file():
         return True, f"init 脚本不存在，跳过: {init_bat_path}"
 
     try:
@@ -251,6 +535,15 @@ def run_init_script(package_dir: Path, init_bat_path: str) -> Tuple[bool, str]:
         return False, f"init 脚本异常: {e}"
 
 
+def run_convention_init_if_present(package_root: Path) -> Tuple[bool, str]:
+    """仅当存在 999.0/init.bat（文件）时执行；路径不从 yaml 读取。"""
+    rel = Path("999.0") / "init.bat"
+    init_path = package_root / rel
+    if not init_path.is_file():
+        return True, "no 999.0/init.bat"
+    return run_init_script(package_root, rel.as_posix().replace("/", os.sep))
+
+
 def print_status_table(existing: List[str], missing: List[str]) -> None:
     """打印包状态表格。"""
     print("\n[检查] 扫描 rez-package-source 目录...")
@@ -269,51 +562,118 @@ def print_status_table(existing: List[str], missing: List[str]) -> None:
     print()
 
 
+def _requires_names_from_package_py_text(content: str) -> List[str]:
+    """解析 package.py 文本中的 requires 列表，返回包名（不含版本段，如 python-3.12 → python）。"""
+    import re
+
+    m = re.search(r'requires\s*=\s*\[([^\]]+)\]', content, re.S)
+    if not m:
+        return []
+    raw = m.group(1)
+    return re.findall(r'["\']([\w]+)', raw)
+
+
 def get_requires_for_package(pkg_name: str, source_dir: Path) -> List[str]:
     """从 rez-package-source/<pkg_name>/*/package.py 读取 requires 列表。
 
     返回包名列表（去除版本约束，如 'python-3.12+<3.13' 取 'python'）。
     """
-    import re
     pkg_files = list((source_dir / pkg_name).glob("*/package.py"))
     if not pkg_files:
         print(f"[WARN] {pkg_name}/package.py 未找到，无法读取 requires", file=sys.stderr)
         return []
     content = pkg_files[0].read_text(encoding="utf-8")
-    m = re.search(r'requires\s*=\s*\[([^\]]+)\]', content, re.S)
-    if not m:
-        return []
-    raw = m.group(1)
-    # 提取包名（去除 -version 约束，只保留名称部分）
-    names = re.findall(r'["\']([\w]+)', raw)
-    return names
+    return _requires_names_from_package_py_text(content)
 
 
-def collect_transitive_pip_deps(start_requires: List[str], source_dir: Path) -> List[str]:
-    """从 start_requires 出发递归收集所有传递性 pip 包依赖。
+def _registry_key_for_family(family: str) -> Optional[str]:
+    """requires 中的家族短名（大小写不敏感）对应到 PACKAGE_REGISTRY 里的键。"""
+    fl = family.split("-")[0].lower()
+    for key in PACKAGE_REGISTRY:
+        if str(key).split("-")[0].lower() == fl:
+            return str(key)
+    return None
 
-    对每个 GitHub 包，继续读取其 requires 并递归处理，
-    直到没有新包为止。pip 包自身不再继续展开。
+
+def collect_for_rez_env_nuget_and_pip_closure(
+    github_roots: List[str],
+    top_level_families: List[str],
+    source_dir: Path,
+    extra_pip_meta: Dict[str, Any],
+) -> Tuple[List[str], List[str], Dict[str, Any], Optional[str]]:
+    """在 GitHub 闭包已就绪后，扫描所有 ``requires``，得到待安装的 nuget 键列表与 pip 键列表。
+
+    - 传递链中 ``kind: nuget`` / ``kind: pip`` / PyPI 未登记名均会进入对应列表。
+    - 未登记且非 PyPI：警告并跳过（不中断）；顶层 env 包名仍由调用方严格校验。
+    - 返回 ``(nuget_keys_ordered, pip_keys_ordered, transitive_pypi_meta, err)``；``err`` 保留供扩展。
     """
-    pip_deps: List[str] = []
-    visited: set[str] = set()
-    queue: List[str] = list(start_requires)
+    pypi_ok: Dict[str, bool] = {}
+    transitive_pypi: Dict[str, Any] = dict(extra_pip_meta)
+    nuget_seen: set[str] = set()
+    nuget_order: List[str] = []
+    pip_seen: set[str] = set()
+    pip_order: List[str] = []
 
-    while queue:
-        pkg = queue.pop(0)
-        if pkg in visited:
-            continue
-        visited.add(pkg)
+    def add_nuget(canonical: str) -> None:
+        if canonical in _NUGET_PACKAGES and canonical not in nuget_seen:
+            nuget_seen.add(canonical)
+            nuget_order.append(canonical)
 
-        if pkg in _PIP_PACKAGES:
-            pip_deps.append(pkg)
-        elif pkg in _GITHUB_PACKAGES:
-            sub = get_requires_for_package(pkg, source_dir)
-            for r in sub:
-                if r not in visited:
-                    queue.append(r)
+    def add_pip(canonical: str) -> None:
+        if canonical not in pip_seen:
+            pip_seen.add(canonical)
+            pip_order.append(canonical)
 
-    return pip_deps
+    for t in top_level_families:
+        k = _registry_key_for_family(t)
+        if k and k in _NUGET_PACKAGES:
+            add_nuget(k)
+        elif k and k in _PIP_PACKAGES:
+            add_pip(k)
+        elif t in transitive_pypi:
+            add_pip(t)
+        elif k and k in transitive_pypi:
+            add_pip(k)
+
+    gh_chain = (
+        collect_transitive_github_packages(github_roots, source_dir) if github_roots else []
+    )
+
+    for gpkg in gh_chain:
+        for r in get_requires_for_package(gpkg, source_dir):
+            k = _registry_key_for_family(r)
+            if k and k in _GITHUB_PACKAGES:
+                continue
+            if k and k in _NUGET_PACKAGES:
+                add_nuget(k)
+                continue
+            if k and k in _PIP_PACKAGES:
+                add_pip(k)
+                continue
+            if r in transitive_pypi:
+                add_pip(r)
+                continue
+            if k and k in transitive_pypi:
+                add_pip(k)
+                continue
+            if k and k in PACKAGE_REGISTRY:
+                continue
+            if r not in pypi_ok:
+                pypi_ok[r] = is_pypi_package(r)
+            if pypi_ok[r]:
+                transitive_pypi[r] = {"pip_name": r, "python_ver": "3.12"}
+                add_pip(r)
+            else:
+                print(
+                    f"[for-rez-env] [WARN] 传递依赖 {r!r} 未登记且非 PyPI，已跳过 "
+                    f"（由 {gpkg!r} 的 requires 引用）；rez 若缺包请写入 package_registry.yaml。",
+                    file=sys.stderr,
+                )
+
+    if "python" in nuget_order:
+        nuget_order = ["python"] + [x for x in nuget_order if x != "python"]
+
+    return (nuget_order, pip_order, transitive_pypi, None)
 
 
 def check_python_executable() -> Optional[Path]:
@@ -381,19 +741,20 @@ def install_pip_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path)
     # 生成 rez package.py
     pkg_dir.mkdir(parents=True, exist_ok=True)
     package_py = pkg_dir / "package.py"
-    next_ver = f"{python_ver.rsplit('.', 1)[0]}.{int(python_ver.rsplit('.', 1)[-1]) + 1}"
+    req_lit = _pip_rez_requires_literal(pkg_name, python_ver)
+    cmd_blk = _pip_rez_pythonpath_commands(pkg_name)
     package_py.write_text(
         f'# -*- coding: utf-8 -*-\n'
         f'name = "{pkg_name}"\n'
         f'version = "{rez_ver}"\n'
         f'description = "{meta.get("description", pkg_name)}"\n'
-        f'requires = ["python-{python_ver}+<{next_ver}"]\n'
+        f"requires = {req_lit}\n"
         f'build_command = False\n'
         f'cachable = True\n'
         f'relocatable = True\n'
         f'\n'
         f'def commands():\n'
-        f'    env.PYTHONPATH.append("{{root}}/.{pkg_name}")\n',
+        f"{cmd_blk}",
         encoding="utf-8"
     )
 
@@ -507,7 +868,11 @@ def _download_nuget_python(pkg_name: str, meta: dict, pkg_dir: Path, third_party
 def install_nuget_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Path) -> Tuple[bool, str]:
     """安装 nuget 包（如 python）到 rez-package-3rd。
 
-    优先复用 wuwo/py_312（只写 package.py wrapper），不存在时才下载 nuget 包。
+    与 rez-package-source 中声明的 python 依赖一致：默认从 NuGet 解压完整运行时到
+    ``rez-package-3rd/python/<rez_ver>/``，便于独立分发、不依赖 wuwo/py_312 路径。
+
+    若 NuGet 下载或解压失败，且存在 ``wuwo/py_312/python.exe``，则回退为仅生成指向
+    py_312 的 ``package.py`` 包装。
     """
     rez_ver = meta.get("rez_ver", "3.12.10")
     pkg_dir = third_party_dir / pkg_name / rez_ver
@@ -517,12 +882,23 @@ def install_nuget_package_to_3rd(pkg_name: str, meta: dict, third_party_dir: Pat
 
     pkg_dir.mkdir(parents=True, exist_ok=True)
 
+    ok, msg = _download_nuget_python(pkg_name, meta, pkg_dir, third_party_dir)
+    if ok:
+        return ok, msg
+
     wuwo_dir = Path(__file__).resolve().parent
     py312_exe = wuwo_dir / "py_312" / "python.exe"
     if py312_exe.exists():
+        print(f"      [WARN] NuGet Python 未就绪，回退使用 wuwo/py_312 包装: {msg}")
+        try:
+            if pkg_dir.exists():
+                shutil.rmtree(pkg_dir)
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return False, f"NuGet 失败且无法清理目录 {pkg_dir}: {exc}; 原因为: {msg}"
         return _write_python_rez_wrapper(pkg_dir, py312_exe.parent, rez_ver)
 
-    return _download_nuget_python(pkg_name, meta, pkg_dir, third_party_dir)
+    return ok, msg
 
 
 def main() -> int:
@@ -565,34 +941,71 @@ def main() -> int:
     parser.add_argument(
         "--for-rez-env",
         metavar="REZ_ENV_ARGS",
-        help="解析 'rez env' 参数字符串，自动安装所有传递性 pip 包依赖（由 wuwo.bat 调用）",
+        help=(
+            "解析 'rez env ...'：按需克隆 GitHub 包、安装依赖树内全部 nuget/pip（含传递与 PyPI 未登记名）"
+        ),
     )
 
     args = parser.parse_args()
 
-    # --for-rez-env 模式：解析 rez env 参数字符串，提取包名并安装其传递性 pip 依赖
+    # --for-rez-env：GitHub 克隆/载荷 + 闭包内全部 nuget（registry）与 pip（含传递 PyPI）
     if args.for_rez_env:
         source_dir = find_rez_package_source(args.source_dir)
-        # 取 '--' 之前的部分，去除版本约束（如 python-3.12 → python）
+        load_live_registry(source_dir)
         raw_args = args.for_rez_env.split("--")[0]
-        tokens = raw_args.split()
-        pkg_names = [t.split("-")[0] for t in tokens if not t.startswith("-")]
-        # 只处理注册表里有的包
-        known = [p for p in pkg_names if p in _GITHUB_PACKAGES]
-        if not known:
-            print("[for-rez-env] 未发现注册表内的 GitHub 包，跳过")
-            return 0
-        print(f"[for-rez-env] 检测到包: {known}，递归收集 pip 依赖...")
-        pip_deps: List[str] = collect_transitive_pip_deps(known, source_dir)
-        if not pip_deps:
-            print("[for-rez-env] 无需安装额外 pip 包")
-            return 0
-        print(f"[for-rez-env] 将安装 pip 包: {pip_deps}")
+        pkg_names = parse_rez_env_root_packages(raw_args.split(), PACKAGE_REGISTRY)
+        dynamic_pip: Dict[str, Any] = {}
+        for p in pkg_names:
+            if p not in PACKAGE_REGISTRY:
+                if not is_pypi_package(p):
+                    print(
+                        f"[for-rez-env] [错误] 依赖名未在 package_registry.yaml 且非 PyPI 包: {p}\n"
+                        f"  请在 {registry_yaml_path(source_dir)} 中登记（如 kind: github）或修正名称。",
+                        file=sys.stderr,
+                    )
+                    return 1
+                dynamic_pip[p] = {"pip_name": p, "python_ver": "3.12"}
+        merged_registry: Dict[str, Any] = {**PACKAGE_REGISTRY, **dynamic_pip}
+
         third_party_dir = source_dir.parent / "rez-package-3rd"
         third_party_dir.mkdir(parents=True, exist_ok=True)
+
+        github_known = [p for p in pkg_names if p in _GITHUB_PACKAGES]
         fail = 0
+        if github_known:
+            fail = ensure_github_packages_for_rez_env(
+                github_known, source_dir, skip_init=args.skip_init
+            )
+            if fail:
+                return fail
+
+        nuget_keys, pip_deps, trans_pip_meta, pip_collect_err = (
+            collect_for_rez_env_nuget_and_pip_closure(
+                github_known, pkg_names, source_dir, dynamic_pip
+            )
+        )
+        if pip_collect_err:
+            print(f"[for-rez-env] [错误] {pip_collect_err}", file=sys.stderr)
+            return 1
+        merged_registry = {**merged_registry, **trans_pip_meta}
+
+        if nuget_keys:
+            print(f"[for-rez-env] 依赖树中的 nuget 包，安装到 rez-package-3rd: {nuget_keys}")
+            for nk in nuget_keys:
+                meta = _NUGET_PACKAGES[nk]
+                ok, msg = install_nuget_package_to_3rd(nk, meta, third_party_dir)
+                print(f"  [{'OK' if ok else 'FAIL'}] {nk}: {msg}")
+                if not ok:
+                    fail += 1
+
+        if not pip_deps:
+            if not nuget_keys:
+                print("[for-rez-env] 无需安装 nuget / pip 第三方包")
+            return 1 if fail else 0
+
+        print(f"[for-rez-env] 将安装 pip 包: {pip_deps}")
         for pkg in pip_deps:
-            meta = PACKAGE_REGISTRY[pkg]
+            meta = merged_registry[pkg]
             ok, msg = install_pip_package_to_3rd(pkg, meta, third_party_dir)
             print(f"  [{'OK' if ok else 'FAIL'}] {pkg}: {msg}")
             if not ok:
@@ -601,6 +1014,7 @@ def main() -> int:
 
     # --for-package / 全量模式：确定 rez-package-source 路径
     source_dir = find_rez_package_source(args.source_dir)
+    load_live_registry(source_dir)
     if not source_dir.exists():
         print(f"[信息] rez-package-source 目录不存在，自动创建: {source_dir}")
         source_dir.mkdir(parents=True, exist_ok=True)
@@ -623,8 +1037,7 @@ def main() -> int:
                 else:
                     print(f"[信息] {args.for_package} 不在 rez-package-source，先克隆...")
                 if _check_git_available():
-                    _info = _GITHUB_PACKAGES[args.for_package]
-                    _ok, _msg = clone_package(args.for_package, _info["repo"], source_dir)
+                    _ok, _msg = clone_package(args.for_package, source_dir)
                     print(f"  [{'OK' if _ok else 'WARN'}] {_msg}")
                 else:
                     print("[WARN] git 不可用，无法克隆目标包")
@@ -669,17 +1082,22 @@ def main() -> int:
             nuget_deps  = [r for r in requires if r in _NUGET_PACKAGES]
             not_in_registry = [r for r in requires if r not in PACKAGE_REGISTRY]
 
-            # 对于未注册的依赖：自动查询 PyPI，如果存在就动态加入 pip_deps
+            # 未在注册表：须为 PyPI 包，否则失败（与 --for-rez-env 一致）
             if not_in_registry:
-                print(f"[信息] 以下依赖不在注册表中，查询 PyPI…: {not_in_registry}")
+                print(f"[信息] 以下依赖不在注册表中，校验 PyPI…: {not_in_registry}")
                 for r in not_in_registry:
                     if is_pypi_package(r):
                         print(f"        [OK] {r} 在 PyPI 上存在，加入 pip 安装列表")
                         pip_deps.append(r)
-                        # 动态加入注册表（仅当前运行有效）
                         PACKAGE_REGISTRY[r] = {"pip_name": r, "python_ver": "3.12"}
                     else:
-                        print(f"        [WARN] {r} 在 PyPI 上未找到，跳过")
+                        err_msg = (
+                            f"[错误] 依赖 {r} 未在 package_registry.yaml 且非 PyPI 包。\n"
+                            f"  请登记: {registry_yaml_path(source_dir)}"
+                        )
+                        print(err_msg, file=sys.stderr)
+                        _show_error_popup("wuwo: 未注册依赖", err_msg)
+                        return 1
 
             if github_deps:
                 print(f"[信息] 将检查 GitHub 包: {github_deps}")
@@ -712,7 +1130,7 @@ def main() -> int:
     github_to_scan = args.packages if args.packages else list(_GITHUB_PACKAGES.keys())
     existing, missing = check_missing_packages(source_dir, github_to_scan)
 
-    # 全量模式下同步收集所有 pip 包以便后续安装
+    # 全量模式下同步收集所有 pip 包以便后续安装（不扫全树装 python；python 见 --for-rez-env）
     if not args.for_package and not args.packages:
         base_pip: List[str] = getattr(args, "pip_packages", None) or []
         args.pip_packages = base_pip + list(_PIP_PACKAGES.keys())
@@ -745,13 +1163,12 @@ def main() -> int:
             init_fail_count = 0
 
             for idx, pkg_name in enumerate(missing, 1):
-                info = PACKAGE_REGISTRY[pkg_name]
-                repo_name = info["repo"]
-                init_bat = info["init_bat"]
                 pkg_dir = source_dir / pkg_name
+                entry = _GITHUB_PACKAGES.get(pkg_name, {})
+                clone_url = _github_clone_url(pkg_name, entry)
 
                 print(f"[{idx}/{len(missing)}] 正在克隆 {pkg_name} ...")
-                print(f"      git clone --depth 1 https://github.com/{GITHUB_OWNER}/{repo_name}.git")
+                print(f"      git clone --depth 1 {clone_url}")
 
                 # --force 模式下先删除已有目录
                 if args.force and pkg_dir.exists():
@@ -763,7 +1180,7 @@ def main() -> int:
                         fail_count += 1
                         continue
 
-                ok, msg = clone_package(pkg_name, repo_name, source_dir)
+                ok, msg = clone_package(pkg_name, source_dir)
 
                 if not ok:
                     print(f"      [错误] {msg}")
@@ -773,15 +1190,14 @@ def main() -> int:
                 print(f"      {msg}")
                 success_count += 1
 
-                # 运行 init.bat
-                if init_bat and not args.skip_init:
-                    print(f"      运行初始化脚本: {init_bat}")
-                    init_ok, init_msg = run_init_script(pkg_dir, init_bat)
+                if not args.skip_init:
+                    print("      检查 999.0/init.bat …")
+                    init_ok, init_msg = run_convention_init_if_present(pkg_dir)
+                    if "no 999.0" not in init_msg:
+                        print(f"      {init_msg}")
                     if not init_ok:
                         print(f"      [警告] {init_msg}")
                         init_fail_count += 1
-                    else:
-                        print(f"      {init_msg}")
 
             # 汇总
             print()
