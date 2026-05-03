@@ -73,23 +73,12 @@ echo [wuwo] Try reinstalling dependencies: "%PYTHON_EXE%" -m pip install rez
 exit /b 1
 
 :run_rez_exe
-REM Lazy: only for "rez env ..." — install python / pip into rez-package-3rd for this env's dep tree
-echo %_REST%| findstr /i /b "env " >nul 2>&1 && (
-  "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "%_REST%"
-  if errorlevel 1 (
-    echo [wuwo] WARNING: auto_fetch --for-rez-env failed. Continuing...
-  )
-)
+REM Keep native rez behavior unchanged: directly forward command.
 "%REZ_EXE%" %_REST%
 goto :eof
 
 :run_rez_script
-echo %_REST%| findstr /i /b "env " >nul 2>&1 && (
-  "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "%_REST%"
-  if errorlevel 1 (
-    echo [wuwo] WARNING: auto_fetch --for-rez-env failed. Continuing...
-  )
-)
+REM Keep native rez behavior unchanged: directly forward command.
 "%PYTHON_EXE%" "%REZ_SCRIPT%" %_REST%
 goto :eof
 
