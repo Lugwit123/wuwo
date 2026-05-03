@@ -64,9 +64,24 @@ if %errorlevel% neq 0 (
 REM ------ Step 1: Clone / pull wuwo repo ------
 if exist "%WUWO_DIR%\.git" (
     echo [INFO] wuwo already cloned. Pulling latest changes...
-    git -C "%WUWO_DIR%" pull --ff-only
+    git -C "%WUWO_DIR%" pull --ff-only --autostash
     if !errorlevel! neq 0 (
-        echo [WARN] git pull failed. Proceeding with existing files.
+        echo [WARN] git pull --autostash failed. Forcing sync with remote ^(discards local changes to tracked files e.g. config.yaml, install.bat^)...
+        git -C "%WUWO_DIR%" fetch origin
+        set "WUWO_UPSTREAM="
+        for /f "delims=" %%U in ('git -C "%WUWO_DIR%" rev-parse --abbrev-ref --symbolic-full-name @{u} 2^>nul') do set "WUWO_UPSTREAM=%%U"
+        if defined WUWO_UPSTREAM (
+            git -C "%WUWO_DIR%" reset --hard "!WUWO_UPSTREAM!"
+        ) else (
+            for /f "delims=" %%B in ('git -C "%WUWO_DIR%" rev-parse --abbrev-ref HEAD 2^>nul') do (
+                git -C "%WUWO_DIR%" reset --hard origin/%%B
+            )
+        )
+        if !errorlevel! neq 0 (
+            echo [ERROR] Forced git sync failed. Check remote / branch / network.
+            goto :fail
+        )
+        echo [OK] wuwo repo reset to match remote.
     )
     echo.
 ) else if exist "%WUWO_DIR%" (
