@@ -151,9 +151,9 @@ def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> 
 
 
 def has_update_ephemeral(tokens: List[str]) -> bool:
-    """检测是否包含 '.updata' / '.update' 临时请求。"""
+    """检测是否包含 '.update' 临时请求。"""
     eph = {t.strip().lower() for t in tokens if t.startswith(".")}
-    return (".updata" in eph) or (".update" in eph)
+    return ".update" in eph
 
 
 def registry_yaml_path(source_dir: Path) -> Path:
@@ -903,9 +903,22 @@ def _download_nuget_python(pkg_name: str, meta: dict, pkg_dir: Path, third_party
 
     print(f"      从 nuget 下载 Python {nuget_ver} ...")
     print(f"      URL: {url}")
+
+    def _reporthook(block_num: int, block_size: int, total_size: int) -> None:
+        if total_size <= 0:
+            return
+        downloaded = block_num * block_size
+        pct = min(100, int(downloaded * 100 / total_size))
+        bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+        mb = downloaded // 1024 // 1024
+        total_mb = total_size // 1024 // 1024
+        print(f"\r      [{bar}] {pct:3d}%  {mb}/{total_mb} MB", end="", flush=True)
+
     try:
-        urllib.request.urlretrieve(url, str(nupkg_file))
+        urllib.request.urlretrieve(url, str(nupkg_file), reporthook=_reporthook)
+        print()
     except Exception as e:
+        print()
         return False, f"下载失败: {e}"
 
     sz = nupkg_file.stat().st_size if nupkg_file.exists() else 0
@@ -1063,7 +1076,7 @@ def main() -> int:
         update_mode = has_update_ephemeral(raw_tokens)
         pkg_names = parse_rez_env_root_packages(raw_tokens, PACKAGE_REGISTRY)
         if update_mode:
-            print("[for-rez-env] 检测到 .updata/.update，启用依赖更新模式（GitHub pull + nuget/pip 重装）")
+            print("[for-rez-env] 检测到 .update，启用依赖更新模式（GitHub pull + nuget/pip 重装）")
         dynamic_pip: Dict[str, Any] = {}
         for p in pkg_names:
             if p not in PACKAGE_REGISTRY:
