@@ -47,6 +47,7 @@ REQUIRED_PACKAGES = [
     ("PyYAML",   "PyYAML"),
     ("pywin32",  "pywin32"),
     ("requests", "requests"),
+    ("six",      "six"),
 ]
 
 # pip 默认/回退源：默认优先阿里云，失败再回退其他源
@@ -112,35 +113,47 @@ def _git_clone_with_mirrors(repo_url: str, dest: Path, timeout: int = 300) -> tu
 
 
 def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> tuple[bool, str]:
-    """先 origin pull，失败后对镜像 URL 执行 pull <url> <branch> --ff-only。"""
-    info("git pull 进度: origin")
-    base = subprocess.run(
-        ["git", "-C", str(repo_dir), "pull", "--progress", "--ff-only"],
-    )
-    if base.returncode == 0:
-        return True, "origin pull 完成"
-
-    branch = "HEAD"
+    """强制同步：fetch + reset --hard + clean -fd，覆盖本地改动。"""
+    branch = "main"
     b = subprocess.run(
-        ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+        ["git", "-C", str(repo_dir), "symbolic-ref", "--quiet", "--short", "HEAD"],
         capture_output=True,
         text=True,
     )
     if b.returncode == 0 and b.stdout.strip():
         branch = b.stdout.strip()
+    else:
+        warn("检测到 detached HEAD，按镜像 FETCH_HEAD 强制覆盖本地。")
 
-    last_err = f"exit {base.returncode}"
+    last_err = "unknown"
     for url in _build_git_mirror_urls(repo_url):
-        info(f"git pull 进度: {url}")
-        result = subprocess.run(
-            ["git", "-C", str(repo_dir), "pull", "--progress", "--ff-only", url, branch],
-        )
-        if result.returncode == 0:
-            return True, f"镜像 pull 完成: {url}"
-        last_err = f"exit {result.returncode}"
-        warn(f"git pull 失败: {url} -> {last_err}")
+        info(f"git fetch 进度: {url}")
+        if b.returncode == 0 and b.stdout.strip():
+            fetch_cmd = ["git", "-C", str(repo_dir), "fetch", "--progress", url, branch]
+        else:
+            fetch_cmd = ["git", "-C", str(repo_dir), "fetch", "--progress", url]
+        f = subprocess.run(fetch_cmd)
+        if f.returncode != 0:
+            last_err = f"fetch exit {f.returncode}"
+            warn(f"git fetch 失败: {url} -> {last_err}")
+            continue
 
-    return False, f"git pull 全部镜像失败: {last_err}"
+        r = subprocess.run(["git", "-C", str(repo_dir), "reset", "--hard", "FETCH_HEAD"])
+        if r.returncode != 0:
+            last_err = f"reset exit {r.returncode}"
+            warn(f"git reset 失败: {url} -> {last_err}")
+            continue
+
+        # 清理未跟踪文件，确保本地与远端一致
+        c = subprocess.run(["git", "-C", str(repo_dir), "clean", "-fd"])
+        if c.returncode != 0:
+            last_err = f"clean exit {c.returncode}"
+            warn(f"git clean 失败: {url} -> {last_err}")
+            continue
+
+        return True, f"镜像强制同步完成: {url}"
+
+    return False, f"git 强制同步全部镜像失败: {last_err}"
 
 
 def download_with_progress(url: str, dest: Path) -> None:
@@ -358,6 +371,33 @@ def install_packages(python_exe: Path) -> None:
                     capture_output=True,
                 )
                 ok("pywin32 post-install 完成。")
+
+
+def ensure_legacy_six_compat(python_exe: Path) -> None:
+    """兼容旧代码硬编码 six.py 路径（Python27 site-packages）。"""
+    legacy_six = Path(r"D:\TD_Depot\plug_in\Python\Python27\Lib\site-packages\six.py")
+    if legacy_six.exists():
+        info(f"兼容 six.py 已存在: {legacy_six}")
+        return
+    try:
+        probe = subprocess.run(
+            [str(python_exe), "-c", "import six,sys;print(six.__file__)"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if probe.returncode != 0 or not (probe.stdout or "").strip():
+            warn("无法定位 six.py，跳过旧路径兼容。")
+            return
+        six_src = Path((probe.stdout or "").strip())
+        if six_src.name.lower() != "six.py" or not six_src.exists():
+            warn(f"six 源文件异常，跳过兼容: {six_src}")
+            return
+        legacy_six.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(six_src, legacy_six)
+        ok(f"已创建 six 旧路径兼容文件: {legacy_six}")
+    except Exception as exc:
+        warn(f"创建 six 旧路径兼容文件失败: {exc}")
 
 
 # ─────────────────────────────────────────────
@@ -840,6 +880,7 @@ def main() -> int:
     step(3, TOTAL_STEPS, "安装依赖包")
     select_best_pip_index_url()
     install_packages(python_exe)
+    ensure_legacy_six_compat(python_exe)
 
     # ── Step 4: 配置 rez 路径 ──
     if args.skip_config:
