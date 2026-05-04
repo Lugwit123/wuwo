@@ -99,25 +99,23 @@ def _git_clone_with_mirrors(repo_url: str, dest: Path, timeout: int = 300) -> tu
     """按镜像列表重试 git clone。"""
     last_err = ""
     for url in _build_git_mirror_urls(repo_url):
+        info(f"git clone 进度: {url}")
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)],
-            capture_output=True,
-            text=True,
+            ["git", "clone", "--progress", "--depth", "1", url, str(dest)],
             timeout=timeout,
         )
         if result.returncode == 0:
             return True, f"clone 成功: {url}"
-        last_err = (result.stderr or result.stdout or "").strip()
-        warn(f"git clone 失败: {url} -> {last_err[:160]}")
+        last_err = f"exit {result.returncode}"
+        warn(f"git clone 失败: {url} -> {last_err}")
     return False, f"git clone 全部镜像失败: {last_err}"
 
 
 def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> tuple[bool, str]:
     """先 origin pull，失败后对镜像 URL 执行 pull <url> <branch> --ff-only。"""
+    info("git pull 进度: origin")
     base = subprocess.run(
-        ["git", "-C", str(repo_dir), "pull", "--ff-only"],
-        capture_output=True,
-        text=True,
+        ["git", "-C", str(repo_dir), "pull", "--progress", "--ff-only"],
     )
     if base.returncode == 0:
         return True, "origin pull 完成"
@@ -131,17 +129,16 @@ def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> tuple[bool, str]:
     if b.returncode == 0 and b.stdout.strip():
         branch = b.stdout.strip()
 
-    last_err = (base.stderr or base.stdout or "").strip()
+    last_err = f"exit {base.returncode}"
     for url in _build_git_mirror_urls(repo_url):
+        info(f"git pull 进度: {url}")
         result = subprocess.run(
-            ["git", "-C", str(repo_dir), "pull", "--ff-only", url, branch],
-            capture_output=True,
-            text=True,
+            ["git", "-C", str(repo_dir), "pull", "--progress", "--ff-only", url, branch],
         )
         if result.returncode == 0:
             return True, f"镜像 pull 完成: {url}"
-        last_err = (result.stderr or result.stdout or "").strip()
-        warn(f"git pull 失败: {url} -> {last_err[:160]}")
+        last_err = f"exit {result.returncode}"
+        warn(f"git pull 失败: {url} -> {last_err}")
 
     return False, f"git pull 全部镜像失败: {last_err}"
 
@@ -171,7 +168,7 @@ def run_pip(python_exe: Path, *args: str) -> int:
     if not has_index_opt:
         host = urllib.parse.urlparse(DEFAULT_PIP_INDEX_URL).hostname or ""
         arg_list += ["-i", DEFAULT_PIP_INDEX_URL, "--trusted-host", host]
-    cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--no-warn-script-location"]
+    cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--progress-bar", "on", "--no-warn-script-location"]
     return subprocess.run(cmd).returncode
 
 
@@ -189,7 +186,7 @@ def _run_pip_with_env(
     if isolated:
         # 忽略 pip 配置文件和环境变量，防止残留代理污染安装。
         arg_list = ["--isolated"] + arg_list
-    cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--no-warn-script-location"]
+    cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--progress-bar", "on", "--no-warn-script-location"]
     return subprocess.run(cmd, env=env).returncode
 
 
@@ -703,7 +700,6 @@ def _install_pip_package(python_exe: Path, pkg_name: str, meta: dict, pkg_dir: P
         python_exe,
         pip_name,
         "--target", str(hidden_dir),
-        "--quiet",
     )
     if ret != 0:
         warn(f"  {pkg_name} pip install 失败，可手动安装: pip install {pip_name}")
