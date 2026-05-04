@@ -93,6 +93,7 @@ if exist "%WUWO_DIR%\.git" (
         echo [OK] wuwo repo reset to match remote.
     )
     echo.
+    goto :after_repo_ready
 ) else if exist "%WUWO_DIR%" (
     if exist "%WUWO_DIR%\install.py" if exist "%WUWO_DIR%\wuwo.bat" (
         echo [INFO] wuwo directory exists ^(not a git repo^) and key files are present. Proceeding with existing files.
@@ -131,6 +132,7 @@ if exist "%WUWO_DIR%\.git" (
     )
     echo [OK] Repository files bootstrapped into: %WUWO_DIR%
     echo.
+    goto :after_repo_ready
 ) else (
     echo [1/3] Cloning wuwo repository...
     echo       %WUWO_REPO%
@@ -149,6 +151,7 @@ if exist "%WUWO_DIR%\.git" (
     )
     echo [OK] Cloned to: %WUWO_DIR%
     echo.
+    goto :after_repo_ready
 )
 
 :after_repo_ready

@@ -49,11 +49,12 @@ REQUIRED_PACKAGES = [
     ("requests", "requests"),
 ]
 
-# pip 源回退顺序：官方直连 -> 关闭代理直连 -> 国内镜像
+# pip 默认/回退源：默认优先阿里云，失败再回退其他源
+DEFAULT_PIP_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple"
 PIP_INDEX_URLS = [
-    "https://pypi.org/simple",
-    "https://pypi.tuna.tsinghua.edu.cn/simple",
     "https://mirrors.aliyun.com/pypi/simple",
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://pypi.org/simple",
 ]
 
 
@@ -165,12 +166,22 @@ def download_with_progress(url: str, dest: Path) -> None:
 
 def run_pip(python_exe: Path, *args: str) -> int:
     """运行 pip 命令，返回退出码。"""
-    cmd = [str(python_exe), "-m", "pip"] + list(args) + ["--no-warn-script-location"]
+    arg_list = list(args)
+    has_index_opt = any(a in ("-i", "--index-url") for a in arg_list)
+    if not has_index_opt:
+        host = urllib.parse.urlparse(DEFAULT_PIP_INDEX_URL).hostname or ""
+        arg_list += ["-i", DEFAULT_PIP_INDEX_URL, "--trusted-host", host]
+    cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--no-warn-script-location"]
     return subprocess.run(cmd).returncode
 
 
 def _run_pip_with_env(python_exe: Path, args: list[str], env: dict | None = None) -> int:
-    cmd = [str(python_exe), "-m", "pip"] + args + ["--no-warn-script-location"]
+    arg_list = list(args)
+    has_index_opt = any(a in ("-i", "--index-url") for a in arg_list)
+    if not has_index_opt:
+        host = urllib.parse.urlparse(DEFAULT_PIP_INDEX_URL).hostname or ""
+        arg_list += ["-i", DEFAULT_PIP_INDEX_URL, "--trusted-host", host]
+    cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--no-warn-script-location"]
     return subprocess.run(cmd, env=env).returncode
 
 
@@ -182,6 +193,46 @@ def _env_without_proxy() -> dict:
     ]:
         env.pop(k, None)
     return env
+
+
+def _test_pip_index_url(index_url: str, timeout: int = 6, use_no_proxy: bool = False) -> tuple[bool, str]:
+    """测试某个 pip 源是否可用。"""
+    test_url = index_url.rstrip("/") + "/pip/"
+    try:
+        req = urllib.request.Request(
+            test_url,
+            headers={"User-Agent": "wuwo-installer/1.0"},
+            method="GET",
+        )
+        opener = urllib.request.build_opener()
+        if use_no_proxy:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            if int(code) < 500:
+                return True, f"HTTP {code}"
+            return False, f"HTTP {code}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def select_best_pip_index_url() -> None:
+    """运行时先探测可用 pip 源，并更新默认源。"""
+    global DEFAULT_PIP_INDEX_URL
+    info("探测可用 pip 源（默认优先阿里云）...")
+    for index_url in PIP_INDEX_URLS:
+        ok1, msg1 = _test_pip_index_url(index_url, use_no_proxy=False)
+        if ok1:
+            DEFAULT_PIP_INDEX_URL = index_url
+            ok(f"选择 pip 源: {index_url} ({msg1})")
+            return
+        ok2, msg2 = _test_pip_index_url(index_url, use_no_proxy=True)
+        if ok2:
+            DEFAULT_PIP_INDEX_URL = index_url
+            ok(f"选择 pip 源: {index_url} (no-proxy, {msg2})")
+            return
+        warn(f"pip 源不可用: {index_url} | env={msg1} | no-proxy={msg2}")
+    warn(f"所有探测源都不可用，继续使用默认源: {DEFAULT_PIP_INDEX_URL}")
 
 
 def run_pip_install_with_fallback(python_exe: Path, *install_args: str) -> int:
@@ -780,6 +831,7 @@ def main() -> int:
 
     # ── Step 3: 安装依赖包 ──
     step(3, TOTAL_STEPS, "安装依赖包")
+    select_best_pip_index_url()
     install_packages(python_exe)
 
     # ── Step 4: 配置 rez 路径 ──
