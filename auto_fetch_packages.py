@@ -10,7 +10,7 @@ auto_fetch_packages.py
     python auto_fetch_packages.py --package l_tray      # 仅处理指定包
     python auto_fetch_packages.py --for-package l_tray  # 读取 l_tray requires，只下载其依赖中注册的缺失包
     python auto_fetch_packages.py --for-rez-env "rez env l_tray -- ..."  # wuwo.bat rez env 前：解析包名（不含 rez/env 子命令）
-    若含 .update（或误写 .updata）：仅对已识别的 GitHub 包 git pull，不重装 nuget/pip。
+    若含 .update（或误写 .updata）：仅对已识别的 GitHub 包做镜像 fetch + reset --hard（覆盖本地未提交改动），不重装 nuget/pip。
 """
 
 import argparse
@@ -453,7 +453,7 @@ def ensure_github_packages_for_rez_env(
 
 
 def update_github_packages_for_rez_env(known: List[str], source_dir: Path) -> int:
-    """更新当前 env 子图中的 GitHub 包（git pull --ff-only）。"""
+    """更新当前 env 子图中的 GitHub 包（镜像 fetch + reset --hard，覆盖本地未提交改动）。"""
     if not known:
         return 0
     if not _check_git_available():
@@ -535,35 +535,51 @@ def _git_clone_with_mirrors(dest: Path, repo_url: str, timeout: int = 300) -> Tu
 
 
 def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> Tuple[bool, str]:
-    base = subprocess.run(
-        ["git", "-C", str(repo_dir), "pull", "--ff-only"],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if base.returncode == 0:
-        return True, "origin pull 完成"
-    branch = "HEAD"
+    """与 install.py 一致：按镜像 fetch + reset --hard FETCH_HEAD + clean -fd，覆盖本地改动。"""
+    gc = ["git", "-C", str(repo_dir)]
     b = subprocess.run(
-        ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+        [*gc, "symbolic-ref", "--quiet", "--short", "HEAD"],
         capture_output=True,
         text=True,
     )
-    if b.returncode == 0 and b.stdout.strip():
-        branch = b.stdout.strip()
+    detached = b.returncode != 0
+    branch = (b.stdout.strip() if b.returncode == 0 and b.stdout.strip() else "") or "main"
 
-    last_err = (base.stderr or base.stdout or "").strip()
+    last_err = ""
     for url in _build_git_mirror_urls(repo_url):
-        res = subprocess.run(
-            ["git", "-C", str(repo_dir), "pull", "--ff-only", url, branch],
+        if detached:
+            fetch_cmd = [*gc, "fetch", "--progress", url]
+        else:
+            fetch_cmd = [*gc, "fetch", "--progress", url, branch]
+        f = subprocess.run(
+            fetch_cmd,
             capture_output=True,
             text=True,
             timeout=300,
         )
-        if res.returncode == 0:
-            return True, f"镜像 pull 完成: {url}"
-        last_err = (res.stderr or res.stdout or "").strip()
-    return False, f"git pull 全部镜像失败: {last_err}"
+        if f.returncode != 0:
+            last_err = (f.stderr or f.stdout or "").strip() or f"fetch exit {f.returncode}"
+            continue
+        r = subprocess.run(
+            [*gc, "reset", "--hard", "FETCH_HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if r.returncode != 0:
+            last_err = (r.stderr or r.stdout or "").strip() or f"reset exit {r.returncode}"
+            continue
+        c = subprocess.run(
+            [*gc, "clean", "-fd"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if c.returncode != 0:
+            last_err = (c.stderr or c.stdout or "").strip() or f"clean exit {c.returncode}"
+            continue
+        return True, f"镜像强制同步完成: {url}"
+    return False, f"git 强制同步全部镜像失败: {last_err}"
 
 
 def clone_package(package_name: str, target_dir: Path) -> Tuple[bool, str]:
@@ -1077,7 +1093,7 @@ def main() -> int:
         metavar="REZ_ENV_ARGS",
         help=(
             "解析 'rez env ...'：按需克隆 GitHub 包、安装依赖树内全部 nuget/pip（含传递与 PyPI 未登记名）。"
-            "若含 .update：仅 git pull 更新 GitHub 包，跳过 nuget/pip。"
+            "若含 .update：仅对 GitHub 包 fetch+reset --hard 强制同步，跳过 nuget/pip。"
         ),
     )
 
@@ -1093,8 +1109,8 @@ def main() -> int:
         pkg_names = parse_rez_env_root_packages(raw_tokens, PACKAGE_REGISTRY)
         if update_mode:
             print(
-                "[for-rez-env] 检测到 .update：仅更新 GitHub 包（git pull），"
-                "跳过 nuget / pip 安装与重装"
+                "[for-rez-env] 检测到 .update：仅强制同步 GitHub 包（fetch + reset --hard，"
+                "会覆盖本地未提交改动），跳过 nuget / pip 安装与重装"
             )
         dynamic_pip: Dict[str, Any] = {}
         for p in pkg_names:
