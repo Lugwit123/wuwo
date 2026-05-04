@@ -175,12 +175,20 @@ def run_pip(python_exe: Path, *args: str) -> int:
     return subprocess.run(cmd).returncode
 
 
-def _run_pip_with_env(python_exe: Path, args: list[str], env: dict | None = None) -> int:
+def _run_pip_with_env(
+    python_exe: Path,
+    args: list[str],
+    env: dict | None = None,
+    isolated: bool = False,
+) -> int:
     arg_list = list(args)
     has_index_opt = any(a in ("-i", "--index-url") for a in arg_list)
     if not has_index_opt:
         host = urllib.parse.urlparse(DEFAULT_PIP_INDEX_URL).hostname or ""
         arg_list += ["-i", DEFAULT_PIP_INDEX_URL, "--trusted-host", host]
+    if isolated:
+        # 忽略 pip 配置文件和环境变量，防止残留代理污染安装。
+        arg_list = ["--isolated"] + arg_list
     cmd = [str(python_exe), "-m", "pip"] + arg_list + ["--no-warn-script-location"]
     return subprocess.run(cmd, env=env).returncode
 
@@ -190,6 +198,9 @@ def _env_without_proxy() -> dict:
     for k in [
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
         "http_proxy", "https_proxy", "all_proxy",
+        "PIP_PROXY", "pip_proxy",
+        "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL",
+        "PIP_TRUSTED_HOST",
     ]:
         env.pop(k, None)
     return env
@@ -248,7 +259,7 @@ def run_pip_install_with_fallback(python_exe: Path, *install_args: str) -> int:
     no_proxy_env = _env_without_proxy()
 
     # 2) 去代理再试官方源（常见于错误代理配置）
-    ret = _run_pip_with_env(python_exe, base_args, env=no_proxy_env)
+    ret = _run_pip_with_env(python_exe, base_args, env=no_proxy_env, isolated=True)
     if ret == 0:
         return 0
 
@@ -257,7 +268,7 @@ def run_pip_install_with_fallback(python_exe: Path, *install_args: str) -> int:
         host = urllib.parse.urlparse(index_url).hostname or ""
         info(f"pip 回退源重试: {index_url}")
         mirror_args = base_args + ["-i", index_url, "--trusted-host", host]
-        ret = _run_pip_with_env(python_exe, mirror_args, env=no_proxy_env)
+        ret = _run_pip_with_env(python_exe, mirror_args, env=no_proxy_env, isolated=True)
         if ret == 0:
             ok(f"pip 回退成功: {index_url}")
             return 0
