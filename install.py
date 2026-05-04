@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -45,6 +47,13 @@ REQUIRED_PACKAGES = [
     ("PyYAML",   "PyYAML"),
     ("pywin32",  "pywin32"),
     ("requests", "requests"),
+]
+
+# pip 源回退顺序：官方直连 -> 关闭代理直连 -> 国内镜像
+PIP_INDEX_URLS = [
+    "https://pypi.org/simple",
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
 ]
 
 
@@ -160,6 +169,51 @@ def run_pip(python_exe: Path, *args: str) -> int:
     return subprocess.run(cmd).returncode
 
 
+def _run_pip_with_env(python_exe: Path, args: list[str], env: dict | None = None) -> int:
+    cmd = [str(python_exe), "-m", "pip"] + args + ["--no-warn-script-location"]
+    return subprocess.run(cmd, env=env).returncode
+
+
+def _env_without_proxy() -> dict:
+    env = dict(os.environ)
+    for k in [
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ]:
+        env.pop(k, None)
+    return env
+
+
+def run_pip_install_with_fallback(python_exe: Path, *install_args: str) -> int:
+    """pip install 回退策略：默认 -> 无代理 -> 多镜像（无代理）。"""
+    base_args = ["install"] + list(install_args)
+
+    # 1) 默认环境（尊重用户现有 pip/代理设置）
+    ret = _run_pip_with_env(python_exe, base_args)
+    if ret == 0:
+        return 0
+
+    warn("pip install 失败，尝试禁用代理后重试...")
+    no_proxy_env = _env_without_proxy()
+
+    # 2) 去代理再试官方源（常见于错误代理配置）
+    ret = _run_pip_with_env(python_exe, base_args, env=no_proxy_env)
+    if ret == 0:
+        return 0
+
+    # 3) 镜像源回退（去代理）
+    for index_url in PIP_INDEX_URLS:
+        host = urllib.parse.urlparse(index_url).hostname or ""
+        info(f"pip 回退源重试: {index_url}")
+        mirror_args = base_args + ["-i", index_url, "--trusted-host", host]
+        ret = _run_pip_with_env(python_exe, mirror_args, env=no_proxy_env)
+        if ret == 0:
+            ok(f"pip 回退成功: {index_url}")
+            return 0
+
+    return ret
+
+
 # ─────────────────────────────────────────────
 #  Step 1-2: 下载 + 静默安装标准 Python
 # ─────────────────────────────────────────────
@@ -230,7 +284,7 @@ def install_packages(python_exe: Path) -> None:
     """逐个安装 REQUIRED_PACKAGES。"""
     for pip_name, display_name in REQUIRED_PACKAGES:
         info(f"安装 {display_name} ...")
-        ret = run_pip(python_exe, "install", pip_name)
+        ret = run_pip_install_with_fallback(python_exe, pip_name)
         if ret != 0:
             warn(f"{display_name} 安装失败，稍后可手动运行: pip install {pip_name}")
         else:
@@ -583,10 +637,12 @@ def _install_pip_package(python_exe: Path, pkg_name: str, meta: dict, pkg_dir: P
     rez_ver = meta.get("rez_ver", "999.0")
     hidden_dir = pkg_dir / f".{pkg_name}"
 
-    ret = run_pip(python_exe, "install", pip_name,
-                  "--target", str(hidden_dir),
-                  "--no-warn-script-location",
-                  "--quiet")
+    ret = run_pip_install_with_fallback(
+        python_exe,
+        pip_name,
+        "--target", str(hidden_dir),
+        "--quiet",
+    )
     if ret != 0:
         warn(f"  {pkg_name} pip install 失败，可手动安装: pip install {pip_name}")
         return

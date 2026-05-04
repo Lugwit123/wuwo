@@ -94,7 +94,42 @@ if exist "%WUWO_DIR%\.git" (
     )
     echo.
 ) else if exist "%WUWO_DIR%" (
-    echo [INFO] wuwo directory exists ^(not a git repo^). Proceeding with existing files.
+    if exist "%WUWO_DIR%\install.py" if exist "%WUWO_DIR%\wuwo.bat" (
+        echo [INFO] wuwo directory exists ^(not a git repo^) and key files are present. Proceeding with existing files.
+        echo.
+        goto :after_repo_ready
+    )
+    echo [WARN] wuwo directory exists ^(not a git repo^) but key files are missing.
+    echo [INFO] Attempting to bootstrap repository content from remote...
+    set "BOOTSTRAP_CLONE_DIR=%TEMP%\wuwo_bootstrap_clone_%RANDOM%%RANDOM%"
+    if exist "!BOOTSTRAP_CLONE_DIR!" rmdir /s /q "!BOOTSTRAP_CLONE_DIR!" 2>nul
+    git clone "%WUWO_REPO%" "!BOOTSTRAP_CLONE_DIR!"
+    if !errorlevel! neq 0 (
+        echo [WARN] Primary clone failed, retrying mirror #1...
+        git clone "%WUWO_REPO_MIRROR1%" "!BOOTSTRAP_CLONE_DIR!"
+        if !errorlevel! neq 0 (
+            echo [WARN] Mirror #1 failed, retrying mirror #2...
+            git clone "%WUWO_REPO_MIRROR2%" "!BOOTSTRAP_CLONE_DIR!"
+            if !errorlevel! neq 0 (
+                echo [ERROR] Failed to clone wuwo on all mirrors! Check network / GitHub access.
+                if exist "!BOOTSTRAP_CLONE_DIR!" rmdir /s /q "!BOOTSTRAP_CLONE_DIR!" 2>nul
+                goto :fail
+            )
+        )
+    )
+    robocopy "!BOOTSTRAP_CLONE_DIR!" "%WUWO_DIR%" /E /NFL /NDL /NJH /NJS >nul
+    set "RC=%ERRORLEVEL%"
+    if !RC! GEQ 8 (
+        echo [ERROR] Failed to copy repository files into existing wuwo directory.
+        if exist "!BOOTSTRAP_CLONE_DIR!" rmdir /s /q "!BOOTSTRAP_CLONE_DIR!" 2>nul
+        goto :fail
+    )
+    if exist "!BOOTSTRAP_CLONE_DIR!" rmdir /s /q "!BOOTSTRAP_CLONE_DIR!" 2>nul
+    if not exist "%WUWO_DIR%\install.py" (
+        echo [ERROR] install.py still missing after bootstrap clone.
+        goto :fail
+    )
+    echo [OK] Repository files bootstrapped into: %WUWO_DIR%
     echo.
 ) else (
     echo [1/3] Cloning wuwo repository...
@@ -116,6 +151,7 @@ if exist "%WUWO_DIR%\.git" (
     echo.
 )
 
+:after_repo_ready
 REM ------ Step 2-3: Bootstrap Python (if py_312 not ready) ------
 if exist "%PYTHON_EXE%" (
     "%PYTHON_EXE%" --version >nul 2>&1
