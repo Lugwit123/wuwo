@@ -24,8 +24,10 @@ def commands():
     env.DEADLINE_PATH = "D:\\TD_Depot\\Software\\dccData\\ThinkBox\\Deadline_Client\\bin"
     env.NUKE_PATH = "D:\\TD_Depot\\Software\\dccData\\NukePlug;C:\\ProgramData\\Thinkbox\\Deadline10\\submitters\\Nuke"
 
-    # --- wuwo config dir (ToolEnv_orgi.json lives here) ---
-    env.WUWO_CONFIG_DIR = "{root}\\..\\..\\..\\config"
+    # --- 与 l_tray 包内 config 统一（EnvVar_orgi / ToolEnv_orgi / smallProgramList 等）---
+    env.WUWO_CONFIG_DIR = (
+        "{root}\\..\\..\\..\\..\\rez-package-source\\l_tray\\999.0\\src\\l_tray\\config"
+    )
     env.WUWO_DIR = "{root}\\..\\..\\.."
     env.WUWO_ICONS_DIR = "{root}\\..\\..\\..\\icons"
 
