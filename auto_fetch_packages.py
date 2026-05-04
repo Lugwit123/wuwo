@@ -10,6 +10,7 @@ auto_fetch_packages.py
     python auto_fetch_packages.py --package l_tray      # 仅处理指定包
     python auto_fetch_packages.py --for-package l_tray  # 读取 l_tray requires，只下载其依赖中注册的缺失包
     python auto_fetch_packages.py --for-rez-env "rez env l_tray -- ..."  # wuwo.bat rez env 前：解析包名（不含 rez/env 子命令）
+    若含 .update（或误写 .updata）：仅对已识别的 GitHub 包 git pull，不重装 nuget/pip。
 """
 
 import argparse
@@ -155,9 +156,9 @@ def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> 
 
 
 def has_update_ephemeral(tokens: List[str]) -> bool:
-    """检测是否包含 '.update' 临时请求。"""
+    """检测是否包含 '.update' 临时请求（兼容误写 .updata）。"""
     eph = {t.strip().lower() for t in tokens if t.startswith(".")}
-    return ".update" in eph
+    return ".update" in eph or ".updata" in eph
 
 
 def registry_yaml_path(source_dir: Path) -> Path:
@@ -1075,7 +1076,8 @@ def main() -> int:
         "--for-rez-env",
         metavar="REZ_ENV_ARGS",
         help=(
-            "解析 'rez env ...'：按需克隆 GitHub 包、安装依赖树内全部 nuget/pip（含传递与 PyPI 未登记名）"
+            "解析 'rez env ...'：按需克隆 GitHub 包、安装依赖树内全部 nuget/pip（含传递与 PyPI 未登记名）。"
+            "若含 .update：仅 git pull 更新 GitHub 包，跳过 nuget/pip。"
         ),
     )
 
@@ -1090,7 +1092,10 @@ def main() -> int:
         update_mode = has_update_ephemeral(raw_tokens)
         pkg_names = parse_rez_env_root_packages(raw_tokens, PACKAGE_REGISTRY)
         if update_mode:
-            print("[for-rez-env] 检测到 .update，启用依赖更新模式（GitHub pull + nuget/pip 重装）")
+            print(
+                "[for-rez-env] 检测到 .update：仅更新 GitHub 包（git pull），"
+                "跳过 nuget / pip 安装与重装"
+            )
         dynamic_pip: Dict[str, Any] = {}
         for p in pkg_names:
             # rez env 顶层包：l_ 前缀（不区分大小写）优先视为 GitHub 包
@@ -1136,6 +1141,9 @@ def main() -> int:
             if update_mode:
                 fail += update_github_packages_for_rez_env(github_known, source_dir)
 
+        if update_mode:
+            return 1 if fail else 0
+
         nuget_keys, pip_deps, trans_pip_meta, pip_collect_err = (
             collect_for_rez_env_nuget_and_pip_closure(
                 github_known, pkg_names, source_dir, dynamic_pip
@@ -1151,7 +1159,7 @@ def main() -> int:
             for nk in nuget_keys:
                 meta = _NUGET_PACKAGES[nk]
                 ok, msg = install_nuget_package_to_3rd(
-                    nk, meta, third_party_dir, force_reinstall=update_mode
+                    nk, meta, third_party_dir, force_reinstall=False
                 )
                 print(f"  [{'OK' if ok else 'FAIL'}] {nk}: {msg}")
                 if not ok:
@@ -1166,7 +1174,7 @@ def main() -> int:
         for pkg in pip_deps:
             meta = merged_registry[pkg]
             ok, msg = install_pip_package_to_3rd(
-                pkg, meta, third_party_dir, force_reinstall=update_mode
+                pkg, meta, third_party_dir, force_reinstall=False
             )
             print(f"  [{'OK' if ok else 'FAIL'}] {pkg}: {msg}")
             if not ok:

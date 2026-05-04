@@ -73,7 +73,7 @@ echo [wuwo] Try reinstalling dependencies: "%PYTHON_EXE%" -m pip install rez
 exit /b 1
 
 :run_rez_exe
-REM rez env：先按需克隆 GitHub 包并把 pip/nuget 依赖装进 rez-package-3rd（与 auto_fetch --for-rez-env 一致）
+REM rez env：先按需克隆 GitHub 包并把 pip/nuget 依赖装进 rez-package-3rd；含 .update 时仅 git pull GitHub 包
 if /i "%_REST:~0,4%"=="env " (
     "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "rez %_REST%"
     if errorlevel 1 exit /b %ERRORLEVEL%

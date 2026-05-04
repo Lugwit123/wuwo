@@ -287,7 +287,7 @@ echo ============================================================
 echo.
 REM -- Start tray via wuwo.bat (runs rez env l_tray -- start_tray)
 if exist "%WUWO_DIR%\wuwo.bat" (
-    start "wuwo tray" /d "%WUWO_DIR%" cmd /k "wuwo.bat rez env l_tray .updata -- start_tray"
+    start "wuwo tray" /d "%WUWO_DIR%" cmd /k "wuwo.bat rez env l_tray .update -- start_tray"
 ) else (
     echo [WARN] wuwo.bat not found, skipping auto-start.
     echo        Run manually: %WUWO_DIR%\wuwo.bat
