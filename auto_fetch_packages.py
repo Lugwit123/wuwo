@@ -122,6 +122,8 @@ def _skip_rez_cli_flag_tokens(tokens: List[str], i: int, n: int) -> int:
 def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> List[str]:
     """从 ``rez [flags] env|… [flags] PKG …`` 或 ``PKG …`` 得到 Rez 包家族短名；去掉 rez、子命令与 CLI 选项。
 
+    包名保留命令行里 ``-`` 前一段的大小写（如 ``l_WChat``）；仅在与子命令 / 注册表根名比较时用小写。
+
     若某子命令名同时出现在 registry 中（如 python），则不作为子命令剥掉。
     """
     tl = [x for x in tokens if x]
@@ -132,8 +134,9 @@ def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> 
         i += 1
     i = _skip_rez_cli_flag_tokens(tl, i, n)
     if i < n:
-        root = tl[i].split("-")[0].lower()
-        if root in _REZ_SUBCOMMAND_ROOTS and root not in reg_roots:
+        first = tl[i].split("-")[0]
+        fl = first.lower()
+        if fl in _REZ_SUBCOMMAND_ROOTS and fl not in reg_roots:
             i += 1
     i = _skip_rez_cli_flag_tokens(tl, i, n)
     rest = tl[i:]
@@ -141,12 +144,13 @@ def parse_rez_env_root_packages(tokens: List[str], registry: Dict[str, Any]) -> 
     for t in rest:
         if not t or t.startswith("-") or t.startswith("."):
             continue
-        root = t.split("-")[0].lower()
-        if not root:
+        fam = t.split("-")[0]
+        fl = fam.lower()
+        if not fl:
             continue
-        if root in _REZ_SUBCOMMAND_ROOTS and root not in reg_roots:
+        if fl in _REZ_SUBCOMMAND_ROOTS and fl not in reg_roots:
             continue
-        out.append(root)
+        out.append(fam)
     return out
 
 
@@ -352,7 +356,11 @@ def collect_transitive_github_packages(
     """从根包出发 BFS 得到传递闭包内所有 _GITHUB_PACKAGES 包名（有序、去重）。"""
     out: List[str] = []
     visited: set[str] = set()
-    queue: List[str] = [p for p in root_github_pkgs if p in _GITHUB_PACKAGES]
+    queue: List[str] = []
+    for p in root_github_pkgs:
+        k = _registry_key_for_family(p)
+        if k and k in _GITHUB_PACKAGES:
+            queue.append(k)
 
     while queue:
         pkg = queue.pop(0)
@@ -361,8 +369,9 @@ def collect_transitive_github_packages(
         visited.add(pkg)
         out.append(pkg)
         for r in get_requires_for_package(pkg, source_dir):
-            if r in _GITHUB_PACKAGES:
-                queue.append(r)
+            rk = _registry_key_for_family(r)
+            if rk and rk in _GITHUB_PACKAGES:
+                queue.append(rk)
     return out
 
 
@@ -679,6 +688,11 @@ def _registry_key_for_family(family: str) -> Optional[str]:
         if str(key).split("-")[0].lower() == fl:
             return str(key)
     return None
+
+
+def _is_l_prefix_package(name: str) -> bool:
+    """包名是否以 l_ 开头（大小写不敏感）。"""
+    return name.split("-")[0].lower().startswith("l_")
 
 
 def collect_for_rez_env_nuget_and_pip_closure(
@@ -1079,21 +1093,39 @@ def main() -> int:
             print("[for-rez-env] 检测到 .update，启用依赖更新模式（GitHub pull + nuget/pip 重装）")
         dynamic_pip: Dict[str, Any] = {}
         for p in pkg_names:
-            if p not in PACKAGE_REGISTRY:
-                if not is_pypi_package(p):
+            # rez env 顶层包：l_ 前缀（不区分大小写）优先视为 GitHub 包
+            if _is_l_prefix_package(p):
+                pk = _registry_key_for_family(p)
+                canon = pk if pk else p
+                if canon not in _GITHUB_PACKAGES:
+                    _GITHUB_PACKAGES[canon] = {}
+                    PACKAGE_REGISTRY[canon] = {}
+                continue
+            pk = _registry_key_for_family(p)
+            canon = pk if pk else p
+            if canon not in PACKAGE_REGISTRY:
+                if not is_pypi_package(canon):
                     print(
                         f"[for-rez-env] [错误] 依赖名未在 package_registry.yaml 且非 PyPI 包: {p}\n"
                         f"  请在 {registry_yaml_path(source_dir)} 中登记（如 kind: github）或修正名称。",
                         file=sys.stderr,
                     )
                     return 1
-                dynamic_pip[p] = {"pip_name": p, "python_ver": "3.12"}
+                dynamic_pip[canon] = {"pip_name": canon, "python_ver": "3.12"}
         merged_registry: Dict[str, Any] = {**PACKAGE_REGISTRY, **dynamic_pip}
 
         third_party_dir = source_dir.parent / "rez-package-3rd"
         third_party_dir.mkdir(parents=True, exist_ok=True)
 
-        github_known = [p for p in pkg_names if p in _GITHUB_PACKAGES]
+        github_known: List[str] = []
+        for p in pkg_names:
+            if _is_l_prefix_package(p):
+                pk = _registry_key_for_family(p)
+                github_known.append(pk if pk else p)
+                continue
+            gk = _registry_key_for_family(p)
+            if gk and gk in _GITHUB_PACKAGES:
+                github_known.append(gk)
         fail = 0
         if github_known:
             fail = ensure_github_packages_for_rez_env(
@@ -1203,13 +1235,22 @@ def main() -> int:
             args.pip_packages = []
             args.nuget_packages = []
         else:
-            # 区分 GitHub 包、pip 包和未在注册表中的依赖
-            github_deps = [r for r in requires if r in _GITHUB_PACKAGES]
-            # 只取直接 requires 里的 pip 包，不递归进子包
-            # （子包的 pip 依赖由 --for-rez-env 在各自的 rez env 调用时处理）
-            pip_deps    = [r for r in requires if r in _PIP_PACKAGES]
-            nuget_deps  = [r for r in requires if r in _NUGET_PACKAGES]
-            not_in_registry = [r for r in requires if r not in PACKAGE_REGISTRY]
+            # 区分 GitHub 包、pip 包和未在注册表中的依赖（requires 短名大小写与注册表键对齐）
+            github_deps: List[str] = []
+            pip_deps: List[str] = []
+            nuget_deps: List[str] = []
+            not_in_registry: List[str] = []
+            for r in requires:
+                rk = _registry_key_for_family(r)
+                key = rk if rk else r
+                if key in _GITHUB_PACKAGES:
+                    github_deps.append(key)
+                elif key in _PIP_PACKAGES:
+                    pip_deps.append(key)
+                elif key in _NUGET_PACKAGES:
+                    nuget_deps.append(key)
+                elif key not in PACKAGE_REGISTRY:
+                    not_in_registry.append(key)
 
             # 未在注册表：须为 PyPI 包，否则失败（与 --for-rez-env 一致）
             if not_in_registry:

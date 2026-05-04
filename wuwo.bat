@@ -41,13 +41,13 @@ if /i "%~1"=="chatroom-backend" goto :start_chatroom_backend
 REM Check if first argument is 'rez' and second is a rez command (env, build, etc.)
 if /i "%~1"=="rez" goto :run_rez_prefixed
 
+REM If no arguments provided, show help
+if "%~1"=="" (
+    goto :show_help
+)
+
 REM Run rez_comanf_reconfig.py with all arguments
 %PYTHON_EXE% %SCRIPT_DIR%rez_comanf_reconfig.py %*
-
-REM If no arguments provided, start interactive shell
-if "%~1"=="" (
-    cmd /k
-)
 goto :eof
 
 :run_rez_prefixed
@@ -73,12 +73,19 @@ echo [wuwo] Try reinstalling dependencies: "%PYTHON_EXE%" -m pip install rez
 exit /b 1
 
 :run_rez_exe
-REM Keep native rez behavior unchanged: directly forward command.
+REM rez env：先按需克隆 GitHub 包并把 pip/nuget 依赖装进 rez-package-3rd（与 auto_fetch --for-rez-env 一致）
+if /i "%_REST:~0,4%"=="env " (
+    "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "rez %_REST%"
+    if errorlevel 1 exit /b %ERRORLEVEL%
+)
 "%REZ_EXE%" %_REST%
 goto :eof
 
 :run_rez_script
-REM Keep native rez behavior unchanged: directly forward command.
+if /i "%_REST:~0,4%"=="env " (
+    "%PYTHON_EXE%" "%SCRIPT_DIR%auto_fetch_packages.py" --for-rez-env "rez %_REST%"
+    if errorlevel 1 exit /b %ERRORLEVEL%
+)
 "%PYTHON_EXE%" "%REZ_SCRIPT%" %_REST%
 goto :eof
 
@@ -101,6 +108,26 @@ if exist "%REZ_EXE%" (
     exit /b 1
 )
 endlocal
+goto :eof
+
+:show_help
+echo.
+echo wuwo usage:
+echo   wuwo.bat rez env ^<package^> [-- command]
+echo   wuwo.bat rez build [args]
+echo   wuwo.bat chatroom_backend [notepad]
+echo   wuwor ^<package^> [-- command]
+echo.
+echo examples:
+echo   wuwo.bat rez env l_tray -- python -V
+echo   wuwo.bat rez env l_WChat
+echo   wuwo.bat chatroom_backend
+echo   wuwor l_WChat
+echo.
+echo notes:
+echo   - rez env will fetch dependencies on demand first
+echo   - package names starting with l_ are treated as git packages first
+echo.
 goto :eof
 
 
