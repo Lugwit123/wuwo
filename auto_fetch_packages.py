@@ -519,18 +519,32 @@ def _build_git_mirror_urls(url: str) -> List[str]:
     return out
 
 
+def _decode_subprocess_output(data: bytes | None) -> str:
+    if not data:
+        return ""
+    for enc in ("utf-8", "gbk", sys.getdefaultencoding()):
+        try:
+            return data.decode(enc)
+        except Exception:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _git_clone_with_mirrors(dest: Path, repo_url: str, timeout: int = 300) -> Tuple[bool, str]:
     last_err = ""
     for url in _build_git_mirror_urls(repo_url):
         result = subprocess.run(
             ["git", "clone", "--depth", "1", url, str(dest)],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout,
         )
         if result.returncode == 0:
             return True, f"git clone 成功: {url}"
-        last_err = (result.stderr or result.stdout or "").strip()
+        last_err = (
+            _decode_subprocess_output(result.stderr).strip()
+            or _decode_subprocess_output(result.stdout).strip()
+        )
     return False, f"git clone 全部镜像失败: {last_err}"
 
 
@@ -540,10 +554,11 @@ def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> Tuple[bool, str]:
     b = subprocess.run(
         [*gc, "symbolic-ref", "--quiet", "--short", "HEAD"],
         capture_output=True,
-        text=True,
+        text=False,
     )
     detached = b.returncode != 0
-    branch = (b.stdout.strip() if b.returncode == 0 and b.stdout.strip() else "") or "main"
+    b_out = _decode_subprocess_output(b.stdout).strip()
+    branch = (b_out if b.returncode == 0 and b_out else "") or "main"
 
     last_err = ""
     for url in _build_git_mirror_urls(repo_url):
@@ -554,29 +569,41 @@ def _git_pull_with_mirrors(repo_dir: Path, repo_url: str) -> Tuple[bool, str]:
         f = subprocess.run(
             fetch_cmd,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=300,
         )
         if f.returncode != 0:
-            last_err = (f.stderr or f.stdout or "").strip() or f"fetch exit {f.returncode}"
+            last_err = (
+                _decode_subprocess_output(f.stderr).strip()
+                or _decode_subprocess_output(f.stdout).strip()
+                or f"fetch exit {f.returncode}"
+            )
             continue
         r = subprocess.run(
             [*gc, "reset", "--hard", "FETCH_HEAD"],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=120,
         )
         if r.returncode != 0:
-            last_err = (r.stderr or r.stdout or "").strip() or f"reset exit {r.returncode}"
+            last_err = (
+                _decode_subprocess_output(r.stderr).strip()
+                or _decode_subprocess_output(r.stdout).strip()
+                or f"reset exit {r.returncode}"
+            )
             continue
         c = subprocess.run(
             [*gc, "clean", "-fd"],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=120,
         )
         if c.returncode != 0:
-            last_err = (c.stderr or c.stdout or "").strip() or f"clean exit {c.returncode}"
+            last_err = (
+                _decode_subprocess_output(c.stderr).strip()
+                or _decode_subprocess_output(c.stdout).strip()
+                or f"clean exit {c.returncode}"
+            )
             continue
         return True, f"镜像强制同步完成: {url}"
     return False, f"git 强制同步全部镜像失败: {last_err}"
