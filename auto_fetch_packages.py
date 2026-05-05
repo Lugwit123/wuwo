@@ -656,16 +656,20 @@ def run_init_script(package_dir: Path, init_bat_path: str) -> Tuple[bool, str]:
         return True, f"init 脚本不存在，跳过: {init_bat_path}"
 
     try:
+        # text=False: Windows 默认 text=True 会用 GBK 读管道，curl 进度条等 UTF-8
+        # 字节会触发 subprocess 内部 UnicodeDecodeError；统一用字节 + 容错解码。
         result = subprocess.run(
             ["cmd", "/c", str(init_path)],
             cwd=str(init_path.parent),
             capture_output=True,
-            text=True,
+            text=False,
             timeout=600,
         )
+        err_t = _decode_subprocess_output(result.stderr).strip()
+        out_t = _decode_subprocess_output(result.stdout).strip()
         if result.returncode != 0:
-            stderr = result.stderr.strip() if result.stderr else "(无错误输出)"
-            return False, f"init 脚本执行失败 (exit {result.returncode}): {stderr}"
+            detail = err_t or out_t or "(无错误输出)"
+            return False, f"init 脚本执行失败 (exit {result.returncode}): {detail}"
         return True, "init 脚本执行完成 OK"
 
     except subprocess.TimeoutExpired:
